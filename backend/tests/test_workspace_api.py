@@ -6,6 +6,8 @@ from app.main import app
 from app.models import Dataset, Document
 from app.storage import save_dataset
 
+USER_ALPHA = {"X-User-Key": "user_alpha"}
+
 
 def _configure_storage_dirs(monkeypatch, tmp_path):
     from app import storage
@@ -30,6 +32,7 @@ def _configure_storage_dirs(monkeypatch, tmp_path):
 def _seed_dataset():
     dataset = Dataset(
         id="ds_workspace",
+        owner_key="user_alpha",
         name="workspace dataset",
         source_filename="workspace.csv",
         created_at=datetime(2026, 5, 12, tzinfo=timezone.utc),
@@ -49,22 +52,23 @@ def test_workspace_endpoints_support_curation_flow(monkeypatch, tmp_path):
     save_dataset(dataset, documents)
     client = TestClient(app)
 
-    initial = client.get(f"/api/datasets/{dataset.id}/workspace")
+    initial = client.get(f"/api/datasets/{dataset.id}/workspace", headers=USER_ALPHA)
     assert initial.status_code == 200
     assert initial.json()["workspace"]["curated_terms"] == []
 
-    custom = client.post(f"/api/datasets/{dataset.id}/workspace/custom-terms", json=["送餐员", "南瓜羹"])
+    custom = client.post(f"/api/datasets/{dataset.id}/workspace/custom-terms", json=["送餐员", "南瓜羹"], headers=USER_ALPHA)
     assert custom.status_code == 200
     assert "送餐员" in custom.json()["workspace"]["custom_terms"]
 
     synonym = client.post(
         f"/api/datasets/{dataset.id}/workspace/synonym-groups",
         json={"canonical_term": "配送员", "aliases": ["送餐员"]},
+        headers=USER_ALPHA,
     )
     assert synonym.status_code == 200
     assert synonym.json()["workspace"]["synonym_groups"][0]["canonical_term"] == "配送员"
 
-    curated = client.put(f"/api/datasets/{dataset.id}/workspace/curated-terms", json=["配送员", "南瓜羹"])
+    curated = client.put(f"/api/datasets/{dataset.id}/workspace/curated-terms", json=["配送员", "南瓜羹"], headers=USER_ALPHA)
     assert curated.status_code == 200
     payload = curated.json()
     assert [item["term"] for item in payload["selected_terms"][:2]] == ["配送员", "南瓜羹"]
@@ -82,6 +86,7 @@ def test_workspace_patch_can_exclude_terms(monkeypatch, tmp_path):
     response = client.put(
         f"/api/datasets/{dataset.id}/workspace",
         json={"custom_terms": ["送餐员", "南瓜羹"], "excluded_terms": ["服务"]},
+        headers=USER_ALPHA,
     )
 
     assert response.status_code == 200
@@ -96,13 +101,13 @@ def test_workspace_summary_and_sections_are_available(monkeypatch, tmp_path):
     save_dataset(dataset, documents)
     client = TestClient(app)
 
-    summary = client.get(f"/api/datasets/{dataset.id}/workspace/summary")
+    summary = client.get(f"/api/datasets/{dataset.id}/workspace/summary", headers=USER_ALPHA)
     assert summary.status_code == 200
     summary_payload = summary.json()
     assert summary_payload["summary"]["document_count"] == 2
     assert summary_payload["workspace"]["dataset_id"] == dataset.id
 
-    section = client.get(f"/api/datasets/{dataset.id}/workspace/sections/top_terms?page=1&page_size=10")
+    section = client.get(f"/api/datasets/{dataset.id}/workspace/sections/top_terms?page=1&page_size=10", headers=USER_ALPHA)
     assert section.status_code == 200
     section_payload = section.json()
     assert section_payload["section"] == "top_terms"

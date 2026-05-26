@@ -21,6 +21,7 @@ class Document(BaseModel):
 
 class Dataset(BaseModel):
     id: str
+    owner_key: str = "local"
     name: str
     source_filename: str
     language: str = "zh-CN"
@@ -226,6 +227,7 @@ class AnalysisOutputs(BaseModel):
 
 class AnalysisRun(BaseModel):
     id: str
+    owner_key: str = "local"
     dataset_id: str
     created_at: datetime
     status: Literal["queued", "running", "completed", "failed"]
@@ -239,6 +241,7 @@ class AnalysisRun(BaseModel):
 
 class AnalysisRunSummary(BaseModel):
     id: str
+    owner_key: str = "local"
     dataset_id: str
     created_at: datetime
     status: Literal["queued", "running", "completed", "failed"]

@@ -190,6 +190,7 @@ type AnalysisStage = "explore" | "topics" | "discover" | "sentiment" | "classify
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8000";
 const PAGE_SIZE = 50;
+const USER_KEY_STORAGE = "nlp-workbench-user-key";
 
 const moduleGroups: Array<{ label: string; ids: TabId[] }> = [
   { label: "语料", ids: ["dataset", "overview"] },
@@ -319,8 +320,8 @@ function formatRunStatus(status?: string | null) {
   return status || "-";
 }
 
-function exportUrl(runId: string, artifact: ExportArtifact) {
-  return `${API_BASE_URL}/api/exports/${runId}/${artifact.artifact}/${artifact.format}`;
+function exportUrl(runId: string, artifact: ExportArtifact, userKey: string) {
+  return `${API_BASE_URL}/api/exports/${runId}/${artifact.artifact}/${artifact.format}?user_key=${encodeURIComponent(userKey)}`;
 }
 
 function sortExports(exports: ExportArtifact[]) {
@@ -395,6 +396,7 @@ async function parseJson<T>(response: Response): Promise<T> {
 export default function Home() {
   const uploadFormRef = useRef<HTMLFormElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [userKey, setUserKey] = useState("");
   const [datasets, setDatasets] = useState<Dataset[]>([]);
   const [selectedDatasetId, setSelectedDatasetId] = useState("");
   const [datasetDetail, setDatasetDetail] = useState<DatasetDetail | null>(null);
@@ -426,6 +428,13 @@ export default function Home() {
   const [selectedTopicIds, setSelectedTopicIds] = useState<Record<string, boolean>>({});
   const deferredQuery = useDeferredValue(searchQuery);
   const [isPending, startTransition] = useTransition();
+
+  async function apiFetch(path: string, init?: RequestInit) {
+    if (!userKey) throw new Error("missing user key");
+    const headers = new Headers(init?.headers);
+    headers.set("X-User-Key", userKey);
+    return fetch(`${API_BASE_URL}${path}`, { ...init, headers, cache: "no-store" });
+  }
 
   const selectedDataset = useMemo(
     () => datasets.find((dataset) => dataset.id === selectedDatasetId) ?? null,
@@ -505,8 +514,20 @@ export default function Home() {
   }, [isPending, isUploading, statusMessage, workspaceLoading, workspaceSaving]);
 
   useEffect(() => {
-    void refreshDatasets();
+    const existing = window.localStorage.getItem(USER_KEY_STORAGE);
+    if (existing) {
+      setUserKey(existing);
+      return;
+    }
+    const next = window.crypto?.randomUUID?.() ?? `user_${Math.random().toString(36).slice(2)}${Date.now().toString(36)}`;
+    window.localStorage.setItem(USER_KEY_STORAGE, next);
+    setUserKey(next);
   }, []);
+
+  useEffect(() => {
+    if (!userKey) return;
+    void refreshDatasets();
+  }, [userKey]);
 
   useEffect(() => {
     setReportDraft(activeRun?.previews.report_markdown ?? "");
@@ -546,6 +567,7 @@ export default function Home() {
   }, [activeTab, deferredQuery, activeRun?.id, workspaceOverview?.workspace.updated_at]);
 
   useEffect(() => {
+    if (!userKey) return;
     if (!selectedDatasetId) {
       setDatasetDetail(null);
       setWorkspaceOverview(null);
@@ -567,9 +589,10 @@ export default function Home() {
     void refreshWorkspace(selectedDatasetId, { silent: true });
     void refreshAnalysisHistory(selectedDatasetId, true);
     void refreshExportHistory(selectedDatasetId);
-  }, [selectedDatasetId]);
+  }, [selectedDatasetId, userKey]);
 
   useEffect(() => {
+    if (!userKey) return;
     if (!selectedDatasetId) return;
     if (activeTab === "overview" && !workspaceSectionRows.selected?.length) {
       void loadWorkspaceSection(selectedDatasetId, "selected", 1, { silent: true });
@@ -581,12 +604,13 @@ export default function Home() {
     }
     if (!tableModuleKeys.includes(activeTab)) return;
     void loadWorkspaceSection(selectedDatasetId, activeTab, tablePage, { silent: true });
-  }, [activeTab, selectedDatasetId, tablePage, workspaceSectionRows.selected?.length, workspaceSectionRows.terms?.length]);
+  }, [activeTab, selectedDatasetId, tablePage, userKey, workspaceSectionRows.selected?.length, workspaceSectionRows.terms?.length]);
 
   useEffect(() => {
+    if (!userKey) return;
     if (!activeRun || !analysisSectionMap[activeTab] || activeRun.status !== "completed") return;
     void loadAnalysisSection(activeRun.id, activeTab, tablePage);
-  }, [activeRun?.id, activeRun?.status, activeTab, tablePage]);
+  }, [activeRun?.id, activeRun?.status, activeTab, tablePage, userKey]);
 
   useEffect(() => {
     if (!activeRun || (activeRun.status !== "queued" && activeRun.status !== "running")) return;
@@ -597,7 +621,7 @@ export default function Home() {
   }, [activeRun]);
 
   async function refreshDatasets() {
-    const response = await fetch(`${API_BASE_URL}/api/datasets`, { cache: "no-store" });
+    const response = await apiFetch("/api/datasets");
     const payload = await parseJson<Dataset[]>(response);
     setDatasets(payload);
     setSelectedDatasetId((current) => (current && payload.some((item) => item.id === current) ? current : ""));
@@ -605,7 +629,7 @@ export default function Home() {
 
   async function refreshDatasetDetail(datasetId: string) {
     try {
-      const response = await fetch(`${API_BASE_URL}/api/datasets/${datasetId}?limit=20`, { cache: "no-store" });
+      const response = await apiFetch(`/api/datasets/${datasetId}?limit=20`);
       if (!response.ok) {
         setDatasetDetail(null);
         return;
@@ -619,7 +643,7 @@ export default function Home() {
   async function refreshWorkspace(datasetId: string, options?: { silent?: boolean }) {
     setWorkspaceLoading(true);
     try {
-      const response = await fetch(`${API_BASE_URL}/api/datasets/${datasetId}/workspace/summary`, { cache: "no-store" });
+      const response = await apiFetch(`/api/datasets/${datasetId}/workspace/summary`);
       if (!response.ok) {
         if (!options?.silent) setStatusMessage("加载词项工作台失败。");
         return;
@@ -639,10 +663,7 @@ export default function Home() {
     const section = workspaceSectionMap[tabId];
     setWorkspaceSectionLoading((current) => ({ ...current, [tabId]: true }));
     try {
-      const response = await fetch(
-        `${API_BASE_URL}/api/datasets/${datasetId}/workspace/sections/${section}?page=${page}&page_size=${PAGE_SIZE}`,
-        { cache: "no-store" },
-      );
+      const response = await apiFetch(`/api/datasets/${datasetId}/workspace/sections/${section}?page=${page}&page_size=${PAGE_SIZE}`);
       if (!response.ok) {
         if (!options?.silent) setStatusMessage("加载工作台内容失败。");
         return;
@@ -659,7 +680,7 @@ export default function Home() {
 
   async function refreshAnalysisHistory(datasetId: string, autoLoadLatest: boolean) {
     try {
-      const response = await fetch(`${API_BASE_URL}/api/analyses?dataset_id=${encodeURIComponent(datasetId)}`, { cache: "no-store" });
+      const response = await apiFetch(`/api/analyses?dataset_id=${encodeURIComponent(datasetId)}`);
       if (!response.ok) {
         setAnalysisHistory([]);
         return;
@@ -674,7 +695,7 @@ export default function Home() {
 
   async function refreshExportHistory(datasetId: string) {
     try {
-      const response = await fetch(`${API_BASE_URL}/api/exports?dataset_id=${encodeURIComponent(datasetId)}`, { cache: "no-store" });
+      const response = await apiFetch(`/api/exports?dataset_id=${encodeURIComponent(datasetId)}`);
       if (!response.ok) {
         setExportHistory([]);
         return;
@@ -687,7 +708,7 @@ export default function Home() {
 
   async function loadAnalysisSummary(runId: string, options?: { silent?: boolean; refreshHistory?: boolean }) {
     try {
-      const response = await fetch(`${API_BASE_URL}/api/analyses/${runId}/summary`, { cache: "no-store" });
+      const response = await apiFetch(`/api/analyses/${runId}/summary`);
       if (!response.ok) {
         if (!options?.silent) setStatusMessage("加载分析结果失败。");
         return;
@@ -715,10 +736,7 @@ export default function Home() {
     if (!section) return;
     setSectionLoading((current) => ({ ...current, [tabId]: true }));
     try {
-      const response = await fetch(
-        `${API_BASE_URL}/api/analyses/${runId}/sections/${section}?page=${page}&page_size=${PAGE_SIZE}`,
-        { cache: "no-store" },
-      );
+      const response = await apiFetch(`/api/analyses/${runId}/sections/${section}?page=${page}&page_size=${PAGE_SIZE}`);
       if (!response.ok) return;
       const payload = await parseJson<AnalysisSectionPage>(response);
       setSectionRows((current) => ({ ...current, [tabId]: payload.items }));
@@ -732,7 +750,8 @@ export default function Home() {
     if (!selectedDatasetId) return;
     setWorkspaceSaving(true);
     try {
-      const response = await fetch(url, init);
+      const path = url.startsWith(API_BASE_URL) ? url.slice(API_BASE_URL.length) : url;
+      const response = await apiFetch(path, init);
       if (!response.ok) {
         const payload = await response.json().catch(() => null);
         setStatusMessage(payload?.detail ?? "词项工作台保存失败。");
@@ -754,7 +773,7 @@ export default function Home() {
     setIsUploading(true);
     setStatusMessage("正在上传语料...");
     try {
-      const response = await fetch(`${API_BASE_URL}/api/datasets/upload`, { method: "POST", body: formData });
+      const response = await apiFetch("/api/datasets/upload", { method: "POST", body: formData });
       if (!response.ok) {
         const payload = await response.json().catch(() => null);
         setStatusMessage(payload?.detail ?? "上传失败。");
@@ -807,7 +826,7 @@ export default function Home() {
     if (!confirmed) return;
     setWorkspaceSaving(true);
     try {
-      const response = await fetch(`${API_BASE_URL}/api/datasets/${selectedDatasetId}`, { method: "DELETE" });
+      const response = await apiFetch(`/api/datasets/${selectedDatasetId}`, { method: "DELETE" });
       if (!response.ok) {
         const payload = await response.json().catch(() => null);
         setStatusMessage(payload?.detail ?? "删除失败。");
@@ -844,7 +863,7 @@ export default function Home() {
     }
     startTransition(async () => {
       setStatusMessage(statusText);
-      const response = await fetch(`${API_BASE_URL}/api/analyses/run`, {
+      const response = await apiFetch("/api/analyses/run", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -892,7 +911,7 @@ export default function Home() {
   async function retryAnalysis(runId: string) {
     startTransition(async () => {
       setStatusMessage("正在重新提交...");
-      const response = await fetch(`${API_BASE_URL}/api/analyses/${runId}/retry`, { method: "POST" });
+      const response = await apiFetch(`/api/analyses/${runId}/retry`, { method: "POST" });
       if (!response.ok) {
         const payload = await response.json().catch(() => null);
         setStatusMessage(payload?.detail ?? "重试失败。");
@@ -1016,7 +1035,7 @@ export default function Home() {
     }));
     startTransition(async () => {
       setStatusMessage("正在运行分类...");
-      const response = await fetch(`${API_BASE_URL}/api/analyses/run`, {
+      const response = await apiFetch("/api/analyses/run", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1457,7 +1476,7 @@ export default function Home() {
               复制
             </button>
             {reportArtifact && activeRun ? (
-              <a className="primary-button" href={exportUrl(activeRun.id, reportArtifact)} rel="noreferrer" target="_blank">
+              <a className="primary-button" href={exportUrl(activeRun.id, reportArtifact, userKey)} rel="noreferrer" target="_blank">
                 下载
               </a>
             ) : null}
@@ -1495,7 +1514,7 @@ export default function Home() {
                       <td>{item.format.toUpperCase()}</td>
                       <td>{item.rows}</td>
                       <td>
-                        <a className="table-link" href={exportUrl(activeRun.id, item)} rel="noreferrer" target="_blank">
+                        <a className="table-link" href={exportUrl(activeRun.id, item, userKey)} rel="noreferrer" target="_blank">
                           下载
                         </a>
                       </td>

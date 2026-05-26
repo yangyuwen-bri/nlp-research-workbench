@@ -5,8 +5,9 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 import uuid
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
+from ..auth import get_user_key
 from ..models import (
     AnalysisOverviewSummary,
     AnalysisPreviewSummary,
@@ -29,13 +30,14 @@ router = APIRouter(prefix="/analyses", tags=["analyses"])
 
 
 @router.get("", response_model=List[AnalysisRunSummary])
-def get_analyses(dataset_id: Optional[str] = None):
-    return list_analyses(dataset_id=dataset_id)
+def get_analyses(dataset_id: Optional[str] = None, user_key: str = Depends(get_user_key)):
+    return list_analyses(owner_key=user_key, dataset_id=dataset_id)
 
 
-def _build_pending_run(request: RunAnalysisRequest) -> AnalysisRun:
+def _build_pending_run(request: RunAnalysisRequest, user_key: str) -> AnalysisRun:
     return AnalysisRun(
         id=f"run_{uuid.uuid4().hex[:10]}",
+        owner_key=user_key,
         dataset_id=request.dataset_id,
         created_at=datetime.now(timezone.utc),
         status="queued",
@@ -59,6 +61,7 @@ def _build_pending_run(request: RunAnalysisRequest) -> AnalysisRun:
 def _enqueue_analysis_run(run: AnalysisRun, request: RunAnalysisRequest) -> None:
     enqueue_analysis_job(
         run_id=run.id,
+        owner_key=run.owner_key,
         request=request,
         created_at=run.created_at,
         handler=execute_analysis_job,
@@ -66,13 +69,13 @@ def _enqueue_analysis_run(run: AnalysisRun, request: RunAnalysisRequest) -> None
 
 
 @router.post("/run")
-def create_analysis(request: RunAnalysisRequest):
+def create_analysis(request: RunAnalysisRequest, user_key: str = Depends(get_user_key)):
     try:
-        load_dataset(request.dataset_id)
+        load_dataset(request.dataset_id, owner_key=user_key)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Dataset not found") from exc
 
-    existing_runs = list_analyses(dataset_id=request.dataset_id)
+    existing_runs = list_analyses(owner_key=user_key, dataset_id=request.dataset_id)
     active_run = next((item for item in existing_runs if item.status in {"queued", "running"}), None)
     if active_run:
         raise HTTPException(
@@ -80,7 +83,7 @@ def create_analysis(request: RunAnalysisRequest):
             detail=f"当前数据集已有任务正在运行，请等待完成后再试。任务ID：{active_run.id}",
         )
 
-    run = _build_pending_run(request)
+    run = _build_pending_run(request, user_key)
     save_analysis(run)
     _enqueue_analysis_run(run, request)
     return {"run": run}
@@ -102,28 +105,28 @@ def _request_from_run(run: AnalysisRun) -> RunAnalysisRequest:
 
 
 @router.post("/{run_id}/retry")
-def retry_analysis(run_id: str):
+def retry_analysis(run_id: str, user_key: str = Depends(get_user_key)):
     try:
-        original = load_analysis(run_id)
+        original = load_analysis(run_id, owner_key=user_key)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Analysis not found") from exc
 
     try:
-        load_dataset(original.dataset_id)
+        load_dataset(original.dataset_id, owner_key=user_key)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Dataset not found") from exc
 
     request = _request_from_run(original)
-    run = _build_pending_run(request)
+    run = _build_pending_run(request, user_key)
     save_analysis(run)
     _enqueue_analysis_run(run, request)
     return {"run": run}
 
 
 @router.get("/{run_id}")
-def get_analysis(run_id: str):
+def get_analysis(run_id: str, user_key: str = Depends(get_user_key)):
     try:
-        return load_analysis(run_id)
+        return load_analysis(run_id, owner_key=user_key)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Analysis not found") from exc
 
@@ -174,25 +177,25 @@ def _build_analysis_overview(run: AnalysisRun) -> AnalysisRunOverview:
 
 
 @router.get("/{run_id}/summary", response_model=AnalysisRunOverview)
-def get_analysis_summary(run_id: str):
+def get_analysis_summary(run_id: str, user_key: str = Depends(get_user_key)):
     try:
-        run = load_analysis(run_id)
+        run = load_analysis(run_id, owner_key=user_key)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Analysis not found") from exc
     return _build_analysis_overview(run)
 
 
 @router.post("/{run_id}/topics/name", response_model=TopicNamingResponse)
-def name_analysis_topics(run_id: str):
+def name_analysis_topics(run_id: str, user_key: str = Depends(get_user_key)):
     try:
-        run = load_analysis(run_id)
+        run = load_analysis(run_id, owner_key=user_key)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Analysis not found") from exc
     if not run.outputs or not run.outputs.topics:
         raise HTTPException(status_code=400, detail="当前分析没有可命名的主题。")
 
     try:
-        dataset_payload = load_dataset(run.dataset_id)
+        dataset_payload = load_dataset(run.dataset_id, owner_key=user_key)
         dataset_name = dataset_payload["dataset"]["name"]
     except (FileNotFoundError, KeyError, TypeError):
         dataset_name = run.dataset_id
@@ -281,9 +284,10 @@ def get_analysis_section(
     section: str,
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=50, ge=1, le=200),
+    user_key: str = Depends(get_user_key),
 ):
     try:
-        run = load_analysis(run_id)
+        run = load_analysis(run_id, owner_key=user_key)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Analysis not found") from exc
 

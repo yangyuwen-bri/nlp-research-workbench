@@ -6,6 +6,9 @@ from app.main import app
 from app.models import AnalysisOutputs, AnalysisRun, Dataset, Document
 from app.storage import load_analysis, save_analysis, save_dataset
 
+USER_ALPHA = {"X-User-Key": "user_alpha"}
+USER_BETA = {"X-User-Key": "user_beta"}
+
 
 def _configure_storage_dirs(monkeypatch, tmp_path):
     from app import storage
@@ -30,6 +33,7 @@ def _configure_storage_dirs(monkeypatch, tmp_path):
 def _build_dataset(dataset_id: str) -> tuple[Dataset, list[Document]]:
     dataset = Dataset(
         id=dataset_id,
+        owner_key="user_alpha",
         name=f"{dataset_id} dataset",
         source_filename=f"{dataset_id}.csv",
         created_at=datetime(2026, 5, 12, tzinfo=timezone.utc),
@@ -88,6 +92,7 @@ def _build_run(
     return AnalysisRun.model_validate(
         {
             "id": run_id,
+            "owner_key": "user_alpha",
             "dataset_id": dataset_id,
             "created_at": created_at,
             "status": status,
@@ -108,7 +113,7 @@ def test_list_analyses_can_filter_by_dataset_id(monkeypatch, tmp_path):
     save_analysis(_build_run("run_other", "ds_beta", datetime(2026, 5, 11, 9, tzinfo=timezone.utc)))
 
     client = TestClient(app)
-    response = client.get("/api/analyses", params={"dataset_id": "ds_alpha"})
+    response = client.get("/api/analyses", params={"dataset_id": "ds_alpha"}, headers=USER_ALPHA)
 
     assert response.status_code == 200
     payload = response.json()
@@ -125,7 +130,7 @@ def test_list_analyses_handles_mixed_naive_and_aware_datetimes(monkeypatch, tmp_
     save_analysis(_build_run("run_aware", "ds_alpha", datetime(2026, 5, 12, 9, tzinfo=timezone.utc)))
 
     client = TestClient(app)
-    response = client.get("/api/analyses", params={"dataset_id": "ds_alpha"})
+    response = client.get("/api/analyses", params={"dataset_id": "ds_alpha"}, headers=USER_ALPHA)
 
     assert response.status_code == 200
     payload = response.json()
@@ -150,12 +155,13 @@ def test_create_analysis_persists_history_entry(monkeypatch, tmp_path):
     create_response = client.post(
         "/api/analyses/run",
         json={"dataset_id": dataset.id, "top_k_terms": 12, "topic_count": 4, "use_llm": False},
+        headers=USER_ALPHA,
     )
     assert create_response.status_code == 200
     create_payload = create_response.json()
     assert create_payload["run"]["status"] == "queued"
 
-    history_response = client.get("/api/analyses", params={"dataset_id": dataset.id})
+    history_response = client.get("/api/analyses", params={"dataset_id": dataset.id}, headers=USER_ALPHA)
     assert history_response.status_code == 200
     payload = history_response.json()
     assert len(payload) == 1
@@ -179,6 +185,7 @@ def test_create_analysis_saves_queued_run_before_background_work(monkeypatch, tm
     response = client.post(
         "/api/analyses/run",
         json={"dataset_id": dataset.id, "top_k_terms": 12, "topic_count": 4, "use_llm": False},
+        headers=USER_ALPHA,
     )
 
     assert response.status_code == 200
@@ -201,6 +208,7 @@ def test_create_analysis_rejects_duplicate_active_run(monkeypatch, tmp_path):
     response = client.post(
         "/api/analyses/run",
         json={"dataset_id": dataset.id, "top_k_terms": 12, "topic_count": 4, "use_llm": False},
+        headers=USER_ALPHA,
     )
 
     assert response.status_code == 409
@@ -213,7 +221,7 @@ def test_get_analysis_returns_saved_run(monkeypatch, tmp_path):
     save_analysis(run)
 
     client = TestClient(app)
-    response = client.get(f"/api/analyses/{run.id}")
+    response = client.get(f"/api/analyses/{run.id}", headers=USER_ALPHA)
 
     assert response.status_code == 200
     payload = response.json()
@@ -264,7 +272,7 @@ def test_get_analysis_summary_returns_lightweight_payload(monkeypatch, tmp_path)
     save_analysis(run)
 
     client = TestClient(app)
-    response = client.get(f"/api/analyses/{run.id}/summary")
+    response = client.get(f"/api/analyses/{run.id}/summary", headers=USER_ALPHA)
 
     assert response.status_code == 200
     payload = response.json()
@@ -313,7 +321,7 @@ def test_name_analysis_topics_updates_run_with_llm_suggestions(monkeypatch, tmp_
     )
 
     client = TestClient(app)
-    response = client.post(f"/api/analyses/{run.id}/topics/name")
+    response = client.post(f"/api/analyses/{run.id}/topics/name", headers=USER_ALPHA)
 
     assert response.status_code == 200
     payload = response.json()
@@ -340,7 +348,7 @@ def test_get_analysis_section_returns_paginated_rows(monkeypatch, tmp_path):
     save_analysis(run)
 
     client = TestClient(app)
-    response = client.get(f"/api/analyses/{run.id}/sections/tokenized", params={"page": 2, "page_size": 1})
+    response = client.get(f"/api/analyses/{run.id}/sections/tokenized", params={"page": 2, "page_size": 1}, headers=USER_ALPHA)
 
     assert response.status_code == 200
     payload = response.json()
@@ -377,7 +385,7 @@ def test_retry_analysis_clones_settings_and_creates_new_queued_run(monkeypatch, 
     monkeypatch.setattr("app.routers.analyses._enqueue_analysis_run", fake_enqueue)
 
     client = TestClient(app)
-    response = client.post(f"/api/analyses/{original.id}/retry")
+    response = client.post(f"/api/analyses/{original.id}/retry", headers=USER_ALPHA)
 
     assert response.status_code == 200
     payload = response.json()["run"]
@@ -389,5 +397,21 @@ def test_retry_analysis_clones_settings_and_creates_new_queued_run(monkeypatch, 
     assert observed["request"].top_k_terms == 12
     assert observed["request"].topic_count == 6
     assert observed["request"].use_llm is False
-    saved = load_analysis(payload["id"])
+    saved = load_analysis(payload["id"], owner_key="user_alpha")
     assert saved.status == "queued"
+
+
+def test_analysis_endpoints_are_user_scoped(monkeypatch, tmp_path):
+    _configure_storage_dirs(monkeypatch, tmp_path)
+    alpha_run = _build_run("run_alpha", "ds_alpha", datetime(2026, 5, 12, 9, tzinfo=timezone.utc))
+    beta_run = alpha_run.model_copy(update={"id": "run_beta", "owner_key": "user_beta", "dataset_id": "ds_beta"})
+    save_analysis(alpha_run)
+    save_analysis(beta_run)
+
+    client = TestClient(app)
+    alpha_list = client.get("/api/analyses", params={"dataset_id": "ds_alpha"}, headers=USER_ALPHA)
+    beta_detail = client.get("/api/analyses/run_beta", headers=USER_ALPHA)
+
+    assert alpha_list.status_code == 200
+    assert [item["id"] for item in alpha_list.json()] == ["run_alpha"]
+    assert beta_detail.status_code == 404

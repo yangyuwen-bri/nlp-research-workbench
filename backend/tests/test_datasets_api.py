@@ -6,6 +6,9 @@ from app.main import app
 from app.models import AnalysisRun, Dataset, Document
 from app.storage import save_analysis, save_dataset
 
+USER_ALPHA = {"X-User-Key": "user_alpha"}
+USER_BETA = {"X-User-Key": "user_beta"}
+
 
 def _configure_storage_dirs(monkeypatch, tmp_path):
     from app import storage
@@ -30,6 +33,7 @@ def _configure_storage_dirs(monkeypatch, tmp_path):
 def _build_dataset(dataset_id: str) -> tuple[Dataset, list[Document]]:
     dataset = Dataset(
         id=dataset_id,
+        owner_key="user_alpha",
         name=f"{dataset_id} dataset",
         source_filename=f"{dataset_id}.csv",
         created_at=datetime(2026, 5, 12, tzinfo=timezone.utc),
@@ -45,6 +49,7 @@ def _build_run(run_id: str, dataset_id: str, status: str, created_at: datetime, 
     return AnalysisRun.model_validate(
         {
             "id": run_id,
+            "owner_key": "user_alpha",
             "dataset_id": dataset_id,
             "created_at": created_at,
             "status": status,
@@ -103,7 +108,7 @@ def test_list_datasets_returns_project_summary(monkeypatch, tmp_path):
     save_analysis(_build_run("run_failed", "ds_alpha", "failed", datetime(2026, 5, 12, 11, tzinfo=timezone.utc)))
 
     client = TestClient(app)
-    response = client.get("/api/datasets")
+    response = client.get("/api/datasets", headers=USER_ALPHA)
 
     assert response.status_code == 200
     payload = {item["id"]: item for item in response.json()}
@@ -120,6 +125,7 @@ def test_get_dataset_returns_preview_documents_by_default(monkeypatch, tmp_path)
     _configure_storage_dirs(monkeypatch, tmp_path)
     dataset = Dataset(
         id="ds_preview",
+        owner_key="user_alpha",
         name="preview dataset",
         source_filename="preview.csv",
         created_at=datetime(2026, 5, 12, tzinfo=timezone.utc),
@@ -133,7 +139,7 @@ def test_get_dataset_returns_preview_documents_by_default(monkeypatch, tmp_path)
     save_dataset(dataset, documents)
 
     client = TestClient(app)
-    response = client.get(f"/api/datasets/{dataset.id}")
+    response = client.get(f"/api/datasets/{dataset.id}", headers=USER_ALPHA)
 
     assert response.status_code == 200
     payload = response.json()
@@ -151,8 +157,8 @@ def test_upload_dataset_reuses_existing_fingerprint(monkeypatch, tmp_path):
         "评论2,味道不错\n"
     ).encode("utf-8")
 
-    first = client.post("/api/datasets/upload", files={"file": ("demo.csv", payload, "text/csv")})
-    second = client.post("/api/datasets/upload", files={"file": ("demo.csv", payload, "text/csv")})
+    first = client.post("/api/datasets/upload", files={"file": ("demo.csv", payload, "text/csv")}, headers=USER_ALPHA)
+    second = client.post("/api/datasets/upload", files={"file": ("demo.csv", payload, "text/csv")}, headers=USER_ALPHA)
 
     assert first.status_code == 200
     assert second.status_code == 200
@@ -162,7 +168,7 @@ def test_upload_dataset_reuses_existing_fingerprint(monkeypatch, tmp_path):
     assert second_body["reused_existing"] is True
     assert second_body["dataset"]["id"] == first_body["dataset"]["id"]
 
-    listed = client.get("/api/datasets")
+    listed = client.get("/api/datasets", headers=USER_ALPHA)
     assert listed.status_code == 200
     assert len(listed.json()) == 1
 
@@ -173,9 +179,30 @@ def test_delete_dataset_removes_dataset(monkeypatch, tmp_path):
     save_dataset(dataset, documents)
 
     client = TestClient(app)
-    response = client.delete(f"/api/datasets/{dataset.id}")
+    response = client.delete(f"/api/datasets/{dataset.id}", headers=USER_ALPHA)
 
     assert response.status_code == 200
-    listed = client.get("/api/datasets")
+    listed = client.get("/api/datasets", headers=USER_ALPHA)
     assert listed.status_code == 200
     assert listed.json() == []
+
+
+def test_dataset_list_and_reuse_are_scoped_per_user(monkeypatch, tmp_path):
+    _configure_storage_dirs(monkeypatch, tmp_path)
+    client = TestClient(app)
+    payload = ("标题,正文\n评论1,配送很快\n评论2,味道不错\n").encode("utf-8")
+
+    first = client.post("/api/datasets/upload", files={"file": ("demo.csv", payload, "text/csv")}, headers=USER_ALPHA)
+    second = client.post("/api/datasets/upload", files={"file": ("demo.csv", payload, "text/csv")}, headers=USER_BETA)
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert first.json()["reused_existing"] is False
+    assert second.json()["reused_existing"] is False
+    assert first.json()["dataset"]["id"] != second.json()["dataset"]["id"]
+
+    alpha_list = client.get("/api/datasets", headers=USER_ALPHA)
+    beta_list = client.get("/api/datasets", headers=USER_BETA)
+    assert len(alpha_list.json()) == 1
+    assert len(beta_list.json()) == 1
+    assert alpha_list.json()[0]["id"] != beta_list.json()[0]["id"]

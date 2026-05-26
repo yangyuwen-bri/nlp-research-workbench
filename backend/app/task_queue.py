@@ -21,6 +21,7 @@ except ImportError:  # pragma: no cover - optional dependency for redis runtime 
 @dataclass(frozen=True)
 class AnalysisJobPayload:
     run_id: str
+    owner_key: str
     request: RunAnalysisRequest
     created_at: datetime
 
@@ -28,6 +29,7 @@ class AnalysisJobPayload:
         return json.dumps(
             {
                 "run_id": self.run_id,
+                "owner_key": self.owner_key,
                 "request": self.request.model_dump(mode="json"),
                 "created_at": self.created_at.isoformat(),
             },
@@ -39,6 +41,7 @@ class AnalysisJobPayload:
         payload = json.loads(raw)
         return cls(
             run_id=payload["run_id"],
+            owner_key=payload["owner_key"],
             request=RunAnalysisRequest.model_validate(payload["request"]),
             created_at=datetime.fromisoformat(payload["created_at"]),
         )
@@ -54,7 +57,7 @@ class InProcessTaskQueueBackend(TaskQueueBackend):
     def enqueue_analysis_job(self, *, payload: AnalysisJobPayload) -> None:
         worker = Thread(
             target=execute_analysis_job,
-            args=(payload.run_id, payload.request, payload.created_at),
+            args=(payload.run_id, payload.request, payload.created_at, payload.owner_key),
             daemon=True,
         )
         worker.start()
@@ -93,13 +96,14 @@ def get_task_queue_backend() -> TaskQueueBackend:
 def enqueue_analysis_job(
     *,
     run_id: str,
+    owner_key: str,
     request: RunAnalysisRequest,
     created_at: datetime,
     handler: Any | None = None,
 ) -> None:
     _ = handler
     get_task_queue_backend().enqueue_analysis_job(
-        payload=AnalysisJobPayload(run_id=run_id, request=request, created_at=created_at)
+        payload=AnalysisJobPayload(run_id=run_id, owner_key=owner_key, request=request, created_at=created_at)
     )
 
 
@@ -115,7 +119,7 @@ def run_worker_loop(*, max_jobs: Optional[int] = None, poll_interval_seconds: fl
             if max_jobs is not None:
                 time.sleep(poll_interval_seconds)
             continue
-        execute_analysis_job(payload.run_id, payload.request, payload.created_at)
+        execute_analysis_job(payload.run_id, payload.request, payload.created_at, payload.owner_key)
         completed += 1
     return completed
 

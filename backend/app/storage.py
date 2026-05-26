@@ -50,19 +50,19 @@ class StorageBackend(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def load_dataset(self, dataset_id: str) -> Dict[str, Any]:
+    def load_dataset(self, dataset_id: str, owner_key: Optional[str] = None) -> Dict[str, Any]:
         raise NotImplementedError
 
     @abstractmethod
-    def list_datasets(self) -> List[Dataset]:
+    def list_datasets(self, owner_key: Optional[str] = None) -> List[Dataset]:
         raise NotImplementedError
 
     @abstractmethod
-    def find_dataset_by_fingerprint(self, fingerprint: str) -> Optional[Dataset]:
+    def find_dataset_by_fingerprint(self, fingerprint: str, owner_key: Optional[str] = None) -> Optional[Dataset]:
         raise NotImplementedError
 
     @abstractmethod
-    def delete_dataset(self, dataset_id: str) -> bool:
+    def delete_dataset(self, dataset_id: str, owner_key: Optional[str] = None) -> bool:
         raise NotImplementedError
 
     @abstractmethod
@@ -78,15 +78,15 @@ class StorageBackend(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def load_analysis(self, run_id: str) -> AnalysisRun:
+    def load_analysis(self, run_id: str, owner_key: Optional[str] = None) -> AnalysisRun:
         raise NotImplementedError
 
     @abstractmethod
-    def list_analyses(self, dataset_id: Optional[str] = None) -> List[AnalysisRunSummary]:
+    def list_analyses(self, owner_key: Optional[str] = None, dataset_id: Optional[str] = None) -> List[AnalysisRunSummary]:
         raise NotImplementedError
 
     @abstractmethod
-    def list_export_artifacts(self, dataset_id: Optional[str] = None) -> List[ExportArtifactSummary]:
+    def list_export_artifacts(self, owner_key: Optional[str] = None, dataset_id: Optional[str] = None) -> List[ExportArtifactSummary]:
         raise NotImplementedError
 
 
@@ -120,24 +120,29 @@ class JsonStorageBackend(StorageBackend):
             },
         )
 
-    def load_dataset(self, dataset_id: str) -> Dict[str, Any]:
-        return _read_json(self.datasets_dir / f"{dataset_id}.json")
+    def load_dataset(self, dataset_id: str, owner_key: Optional[str] = None) -> Dict[str, Any]:
+        payload = _read_json(self.datasets_dir / f"{dataset_id}.json")
+        if owner_key and payload["dataset"].get("owner_key") != owner_key:
+            raise FileNotFoundError(dataset_id)
+        return payload
 
-    def list_datasets(self) -> List[Dataset]:
+    def list_datasets(self, owner_key: Optional[str] = None) -> List[Dataset]:
         datasets: List[Dataset] = []
         for path in sorted(self.datasets_dir.glob("*.json")):
             payload = _read_json(path)
+            if owner_key and payload["dataset"].get("owner_key") != owner_key:
+                continue
             datasets.append(Dataset.model_validate(payload["dataset"]))
         return datasets
 
-    def find_dataset_by_fingerprint(self, fingerprint: str) -> Optional[Dataset]:
+    def find_dataset_by_fingerprint(self, fingerprint: str, owner_key: Optional[str] = None) -> Optional[Dataset]:
         if not fingerprint:
             return None
-        for dataset in self.list_datasets():
+        for dataset in self.list_datasets(owner_key=owner_key):
             candidate_fingerprint = dataset.fingerprint
             if not candidate_fingerprint:
                 try:
-                    payload = self.load_dataset(dataset.id)
+                    payload = self.load_dataset(dataset.id, owner_key=owner_key)
                     documents = [Document.model_validate(item) for item in payload["documents"]]
                     candidate_fingerprint = build_dataset_fingerprint(dataset.name, dataset.text_column, documents)
                 except Exception:
@@ -146,10 +151,14 @@ class JsonStorageBackend(StorageBackend):
                 return dataset
         return None
 
-    def delete_dataset(self, dataset_id: str) -> bool:
+    def delete_dataset(self, dataset_id: str, owner_key: Optional[str] = None) -> bool:
         dataset_path = self.datasets_dir / f"{dataset_id}.json"
         if not dataset_path.exists():
             return False
+        if owner_key:
+            payload = _read_json(dataset_path)
+            if payload["dataset"].get("owner_key") != owner_key:
+                return False
         dataset_path.unlink(missing_ok=True)
         for analysis_path in self.analyses_dir.glob("*.json"):
             payload = _read_json(analysis_path)
@@ -185,19 +194,25 @@ class JsonStorageBackend(StorageBackend):
     def save_analysis(self, run: AnalysisRun) -> None:
         _write_json(self.analyses_dir / f"{run.id}.json", run.model_dump(mode="json"))
 
-    def load_analysis(self, run_id: str) -> AnalysisRun:
-        return AnalysisRun.model_validate(_read_json(self.analyses_dir / f"{run_id}.json"))
+    def load_analysis(self, run_id: str, owner_key: Optional[str] = None) -> AnalysisRun:
+        payload = _read_json(self.analyses_dir / f"{run_id}.json")
+        if owner_key and payload.get("owner_key") != owner_key:
+            raise FileNotFoundError(run_id)
+        return AnalysisRun.model_validate(payload)
 
-    def list_analyses(self, dataset_id: Optional[str] = None) -> List[AnalysisRunSummary]:
+    def list_analyses(self, owner_key: Optional[str] = None, dataset_id: Optional[str] = None) -> List[AnalysisRunSummary]:
         runs: List[AnalysisRunSummary] = []
         for path in self.analyses_dir.glob("*.json"):
             payload = _read_json(path)
+            if owner_key and payload.get("owner_key") != owner_key:
+                continue
             if dataset_id and payload.get("dataset_id") != dataset_id:
                 continue
             outputs = payload.get("outputs")
             runs.append(
                 AnalysisRunSummary(
                     id=payload["id"],
+                    owner_key=payload["owner_key"],
                     dataset_id=payload["dataset_id"],
                     created_at=payload["created_at"],
                     status=payload["status"],
@@ -212,10 +227,12 @@ class JsonStorageBackend(StorageBackend):
             )
         return sorted(runs, key=lambda run: _sortable_datetime(run.created_at), reverse=True)
 
-    def list_export_artifacts(self, dataset_id: Optional[str] = None) -> List[ExportArtifactSummary]:
+    def list_export_artifacts(self, owner_key: Optional[str] = None, dataset_id: Optional[str] = None) -> List[ExportArtifactSummary]:
         items: List[ExportArtifactSummary] = []
         for path in self.analyses_dir.glob("*.json"):
             payload = _read_json(path)
+            if owner_key and payload.get("owner_key") != owner_key:
+                continue
             if dataset_id and payload.get("dataset_id") != dataset_id:
                 continue
             outputs = payload.get("outputs")
@@ -238,6 +255,7 @@ class JsonStorageBackend(StorageBackend):
 POSTGRES_SCHEMA = """
 CREATE TABLE IF NOT EXISTS datasets (
     id TEXT PRIMARY KEY,
+    owner_key TEXT NOT NULL,
     name TEXT NOT NULL,
     source_filename TEXT NOT NULL,
     language TEXT NOT NULL,
@@ -251,6 +269,8 @@ CREATE TABLE IF NOT EXISTS datasets (
 
 CREATE INDEX IF NOT EXISTS idx_datasets_fingerprint
     ON datasets(fingerprint);
+CREATE INDEX IF NOT EXISTS idx_datasets_owner_created
+    ON datasets(owner_key, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS documents (
     id TEXT PRIMARY KEY,
@@ -271,6 +291,7 @@ CREATE TABLE IF NOT EXISTS dataset_workspaces (
 
 CREATE TABLE IF NOT EXISTS analysis_runs (
     id TEXT PRIMARY KEY,
+    owner_key TEXT NOT NULL,
     dataset_id TEXT NOT NULL REFERENCES datasets(id) ON DELETE CASCADE,
     created_at TIMESTAMPTZ NOT NULL,
     status TEXT NOT NULL,
@@ -287,6 +308,8 @@ CREATE INDEX IF NOT EXISTS idx_analysis_runs_dataset_created
 
 CREATE INDEX IF NOT EXISTS idx_analysis_runs_status_created
     ON analysis_runs(status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_analysis_runs_owner_created
+    ON analysis_runs(owner_key, created_at DESC);
 """
 
 
@@ -315,8 +338,12 @@ class PostgresStorageBackend(StorageBackend):
         with self._connect() as conn:
             with conn.cursor() as cur:
                 cur.execute(POSTGRES_SCHEMA)
+                cur.execute("ALTER TABLE datasets ADD COLUMN IF NOT EXISTS owner_key TEXT")
                 cur.execute("ALTER TABLE datasets ADD COLUMN IF NOT EXISTS fingerprint TEXT NULL")
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_datasets_fingerprint ON datasets(fingerprint)")
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_datasets_owner_created ON datasets(owner_key, created_at DESC)")
+                cur.execute("ALTER TABLE analysis_runs ADD COLUMN IF NOT EXISTS owner_key TEXT")
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_analysis_runs_owner_created ON analysis_runs(owner_key, created_at DESC)")
             conn.commit()
 
     def save_dataset(self, dataset: Dataset, documents: List[Document]) -> None:
@@ -327,12 +354,13 @@ class PostgresStorageBackend(StorageBackend):
                 cur.execute(
                     """
                     INSERT INTO datasets (
-                        id, name, source_filename, language, created_at, document_count, text_column, labels, fingerprint, dataset_json
+                        id, owner_key, name, source_filename, language, created_at, document_count, text_column, labels, fingerprint, dataset_json
                     ) VALUES (
-                        %(id)s, %(name)s, %(source_filename)s, %(language)s, %(created_at)s, %(document_count)s,
+                        %(id)s, %(owner_key)s, %(name)s, %(source_filename)s, %(language)s, %(created_at)s, %(document_count)s,
                         %(text_column)s, %(labels)s::jsonb, %(fingerprint)s, %(dataset_json)s::jsonb
                     )
                     ON CONFLICT (id) DO UPDATE SET
+                        owner_key = EXCLUDED.owner_key,
                         name = EXCLUDED.name,
                         source_filename = EXCLUDED.source_filename,
                         language = EXCLUDED.language,
@@ -345,6 +373,7 @@ class PostgresStorageBackend(StorageBackend):
                     """,
                     {
                         "id": dataset.id,
+                        "owner_key": dataset.owner_key,
                         "name": dataset.name,
                         "source_filename": dataset.source_filename,
                         "language": dataset.language,
@@ -389,10 +418,13 @@ class PostgresStorageBackend(StorageBackend):
                 )
             conn.commit()
 
-    def load_dataset(self, dataset_id: str) -> Dict[str, Any]:
+    def load_dataset(self, dataset_id: str, owner_key: Optional[str] = None) -> Dict[str, Any]:
         with self._connect() as conn:
             with conn.cursor() as cur:
-                cur.execute("SELECT dataset_json FROM datasets WHERE id = %s", (dataset_id,))
+                if owner_key:
+                    cur.execute("SELECT dataset_json FROM datasets WHERE id = %s AND owner_key = %s", (dataset_id, owner_key))
+                else:
+                    cur.execute("SELECT dataset_json FROM datasets WHERE id = %s", (dataset_id,))
                 dataset_row = cur.fetchone()
                 if not dataset_row:
                     raise FileNotFoundError(dataset_id)
@@ -426,30 +458,39 @@ class PostgresStorageBackend(StorageBackend):
             ],
         }
 
-    def list_datasets(self) -> List[Dataset]:
+    def list_datasets(self, owner_key: Optional[str] = None) -> List[Dataset]:
         with self._connect() as conn:
             with conn.cursor() as cur:
-                cur.execute("SELECT dataset_json FROM datasets ORDER BY created_at DESC, id ASC")
+                if owner_key:
+                    cur.execute("SELECT dataset_json FROM datasets WHERE owner_key = %s ORDER BY created_at DESC, id ASC", (owner_key,))
+                else:
+                    cur.execute("SELECT dataset_json FROM datasets ORDER BY created_at DESC, id ASC")
                 rows = cur.fetchall()
         return [Dataset.model_validate(row["dataset_json"]) for row in rows]
 
-    def find_dataset_by_fingerprint(self, fingerprint: str) -> Optional[Dataset]:
+    def find_dataset_by_fingerprint(self, fingerprint: str, owner_key: Optional[str] = None) -> Optional[Dataset]:
         if not fingerprint:
             return None
         with self._connect() as conn:
             with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT dataset_json FROM datasets WHERE fingerprint = %s ORDER BY created_at DESC, id DESC LIMIT 1",
-                    (fingerprint,),
-                )
+                if owner_key:
+                    cur.execute(
+                        "SELECT dataset_json FROM datasets WHERE fingerprint = %s AND owner_key = %s ORDER BY created_at DESC, id DESC LIMIT 1",
+                        (fingerprint, owner_key),
+                    )
+                else:
+                    cur.execute(
+                        "SELECT dataset_json FROM datasets WHERE fingerprint = %s ORDER BY created_at DESC, id DESC LIMIT 1",
+                        (fingerprint,),
+                    )
                 row = cur.fetchone()
         if row:
             return Dataset.model_validate(row["dataset_json"])
-        for dataset in self.list_datasets():
+        for dataset in self.list_datasets(owner_key=owner_key):
             if dataset.fingerprint:
                 continue
             try:
-                payload = self.load_dataset(dataset.id)
+                payload = self.load_dataset(dataset.id, owner_key=owner_key)
                 documents = [Document.model_validate(item) for item in payload["documents"]]
                 candidate_fingerprint = build_dataset_fingerprint(dataset.name, dataset.text_column, documents)
             except Exception:
@@ -458,13 +499,19 @@ class PostgresStorageBackend(StorageBackend):
                 return dataset
         return None
 
-    def delete_dataset(self, dataset_id: str) -> bool:
+    def delete_dataset(self, dataset_id: str, owner_key: Optional[str] = None) -> bool:
         with self._connect() as conn:
             with conn.cursor() as cur:
-                cur.execute("SELECT id FROM analysis_runs WHERE dataset_id = %s", (dataset_id,))
+                if owner_key:
+                    cur.execute("SELECT id FROM analysis_runs WHERE dataset_id = %s AND owner_key = %s", (dataset_id, owner_key))
+                else:
+                    cur.execute("SELECT id FROM analysis_runs WHERE dataset_id = %s", (dataset_id,))
                 run_rows = cur.fetchall()
                 run_ids = [str(row["id"]) for row in run_rows]
-                cur.execute("DELETE FROM datasets WHERE id = %s", (dataset_id,))
+                if owner_key:
+                    cur.execute("DELETE FROM datasets WHERE id = %s AND owner_key = %s", (dataset_id, owner_key))
+                else:
+                    cur.execute("DELETE FROM datasets WHERE id = %s", (dataset_id,))
                 deleted = cur.rowcount > 0
             conn.commit()
         if deleted:
@@ -514,6 +561,7 @@ class PostgresStorageBackend(StorageBackend):
         )
         cur_payload = {
             "id": run.id,
+            "owner_key": run.owner_key,
             "dataset_id": run.dataset_id,
             "created_at": run.created_at,
             "status": run.status,
@@ -529,13 +577,14 @@ class PostgresStorageBackend(StorageBackend):
                 cur.execute(
                     """
                     INSERT INTO analysis_runs (
-                        id, dataset_id, created_at, status, started_at, finished_at,
+                        id, owner_key, dataset_id, created_at, status, started_at, finished_at,
                         generator_stack, settings, outputs, error
                     ) VALUES (
-                        %(id)s, %(dataset_id)s, %(created_at)s, %(status)s, %(started_at)s, %(finished_at)s,
+                        %(id)s, %(owner_key)s, %(dataset_id)s, %(created_at)s, %(status)s, %(started_at)s, %(finished_at)s,
                         %(generator_stack)s::jsonb, %(settings)s::jsonb, %(outputs)s::jsonb, %(error)s
                     )
                     ON CONFLICT (id) DO UPDATE SET
+                        owner_key = EXCLUDED.owner_key,
                         dataset_id = EXCLUDED.dataset_id,
                         created_at = EXCLUDED.created_at,
                         status = EXCLUDED.status,
@@ -550,39 +599,56 @@ class PostgresStorageBackend(StorageBackend):
                 )
             conn.commit()
 
-    def load_analysis(self, run_id: str) -> AnalysisRun:
+    def load_analysis(self, run_id: str, owner_key: Optional[str] = None) -> AnalysisRun:
         with self._connect() as conn:
             with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    SELECT id, dataset_id, created_at, status, started_at, finished_at, generator_stack, settings, outputs, error
-                    FROM analysis_runs
-                    WHERE id = %s
-                    """,
-                    (run_id,),
-                )
+                if owner_key:
+                    cur.execute(
+                        """
+                        SELECT id, owner_key, dataset_id, created_at, status, started_at, finished_at, generator_stack, settings, outputs, error
+                        FROM analysis_runs
+                        WHERE id = %s AND owner_key = %s
+                        """,
+                        (run_id, owner_key),
+                    )
+                else:
+                    cur.execute(
+                        """
+                        SELECT id, owner_key, dataset_id, created_at, status, started_at, finished_at, generator_stack, settings, outputs, error
+                        FROM analysis_runs
+                        WHERE id = %s
+                        """,
+                        (run_id,),
+                    )
                 row = cur.fetchone()
         if not row:
             raise FileNotFoundError(run_id)
         return AnalysisRun.model_validate(row)
 
-    def list_analyses(self, dataset_id: Optional[str] = None) -> List[AnalysisRunSummary]:
+    def list_analyses(self, owner_key: Optional[str] = None, dataset_id: Optional[str] = None) -> List[AnalysisRunSummary]:
         query = """
-            SELECT id, dataset_id, created_at, status, started_at, finished_at, generator_stack, settings, outputs, error
+            SELECT id, owner_key, dataset_id, created_at, status, started_at, finished_at, generator_stack, settings, outputs, error
             FROM analysis_runs
         """
-        params: tuple[Any, ...] = ()
+        clauses: list[str] = []
+        params: list[Any] = []
+        if owner_key:
+            clauses.append("owner_key = %s")
+            params.append(owner_key)
         if dataset_id:
-            query += " WHERE dataset_id = %s"
-            params = (dataset_id,)
+            clauses.append("dataset_id = %s")
+            params.append(dataset_id)
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
         query += " ORDER BY created_at DESC, id DESC"
         with self._connect() as conn:
             with conn.cursor() as cur:
-                cur.execute(query, params)
+                cur.execute(query, tuple(params))
                 rows = cur.fetchall()
         return [
             AnalysisRunSummary(
                 id=row["id"],
+                owner_key=row["owner_key"],
                 dataset_id=row["dataset_id"],
                 created_at=row["created_at"],
                 status=row["status"],
@@ -597,20 +663,23 @@ class PostgresStorageBackend(StorageBackend):
             for row in rows
         ]
 
-    def list_export_artifacts(self, dataset_id: Optional[str] = None) -> List[ExportArtifactSummary]:
+    def list_export_artifacts(self, owner_key: Optional[str] = None, dataset_id: Optional[str] = None) -> List[ExportArtifactSummary]:
         query = """
-            SELECT id, dataset_id, created_at, outputs
+            SELECT id, owner_key, dataset_id, created_at, outputs
             FROM analysis_runs
             WHERE outputs IS NOT NULL
         """
-        params: tuple[Any, ...] = ()
+        params: list[Any] = []
+        if owner_key:
+            query += " AND owner_key = %s"
+            params.append(owner_key)
         if dataset_id:
             query += " AND dataset_id = %s"
-            params = (dataset_id,)
+            params.append(dataset_id)
         query += " ORDER BY created_at DESC, id DESC"
         with self._connect() as conn:
             with conn.cursor() as cur:
-                cur.execute(query, params)
+                cur.execute(query, tuple(params))
                 rows = cur.fetchall()
         items: List[ExportArtifactSummary] = []
         for row in rows:
@@ -645,20 +714,20 @@ def save_dataset(dataset: Dataset, documents: List[Document]) -> None:
     get_storage_backend().save_dataset(dataset, documents)
 
 
-def load_dataset(dataset_id: str) -> Dict[str, Any]:
-    return get_storage_backend().load_dataset(dataset_id)
+def load_dataset(dataset_id: str, owner_key: Optional[str] = None) -> Dict[str, Any]:
+    return get_storage_backend().load_dataset(dataset_id, owner_key=owner_key)
 
 
-def list_datasets() -> List[Dataset]:
-    return get_storage_backend().list_datasets()
+def list_datasets(owner_key: Optional[str] = None) -> List[Dataset]:
+    return get_storage_backend().list_datasets(owner_key=owner_key)
 
 
-def find_dataset_by_fingerprint(fingerprint: str) -> Optional[Dataset]:
-    return get_storage_backend().find_dataset_by_fingerprint(fingerprint)
+def find_dataset_by_fingerprint(fingerprint: str, owner_key: Optional[str] = None) -> Optional[Dataset]:
+    return get_storage_backend().find_dataset_by_fingerprint(fingerprint, owner_key=owner_key)
 
 
-def delete_dataset(dataset_id: str) -> bool:
-    return get_storage_backend().delete_dataset(dataset_id)
+def delete_dataset(dataset_id: str, owner_key: Optional[str] = None) -> bool:
+    return get_storage_backend().delete_dataset(dataset_id, owner_key=owner_key)
 
 
 def save_workspace(workspace: DatasetWorkspace) -> None:
@@ -673,16 +742,16 @@ def save_analysis(run: AnalysisRun) -> None:
     get_storage_backend().save_analysis(run)
 
 
-def load_analysis(run_id: str) -> AnalysisRun:
-    return get_storage_backend().load_analysis(run_id)
+def load_analysis(run_id: str, owner_key: Optional[str] = None) -> AnalysisRun:
+    return get_storage_backend().load_analysis(run_id, owner_key=owner_key)
 
 
-def list_analyses(dataset_id: Optional[str] = None) -> List[AnalysisRunSummary]:
-    return get_storage_backend().list_analyses(dataset_id=dataset_id)
+def list_analyses(owner_key: Optional[str] = None, dataset_id: Optional[str] = None) -> List[AnalysisRunSummary]:
+    return get_storage_backend().list_analyses(owner_key=owner_key, dataset_id=dataset_id)
 
 
-def list_export_artifacts(dataset_id: Optional[str] = None) -> List[ExportArtifactSummary]:
-    return get_storage_backend().list_export_artifacts(dataset_id=dataset_id)
+def list_export_artifacts(owner_key: Optional[str] = None, dataset_id: Optional[str] = None) -> List[ExportArtifactSummary]:
+    return get_storage_backend().list_export_artifacts(owner_key=owner_key, dataset_id=dataset_id)
 
 
 def check_storage_connection() -> tuple[bool, str]:

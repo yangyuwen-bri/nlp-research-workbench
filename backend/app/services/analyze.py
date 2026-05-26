@@ -485,6 +485,7 @@ def run_analysis(
     )
     run = AnalysisRun(
         id=run_id,
+        owner_key=dataset.owner_key,
         dataset_id=dataset.id,
         created_at=created_at,
         status="completed",

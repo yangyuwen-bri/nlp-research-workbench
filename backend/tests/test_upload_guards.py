@@ -8,6 +8,8 @@ from app.routers import datasets as datasets_router
 from app.services.ingest import UploadValidationError, ingest_dataset
 from app.settings import get_settings
 
+USER_ALPHA = {"X-User-Key": "user_alpha"}
+
 
 @pytest.fixture(autouse=True)
 def _clear_settings_cache():
@@ -35,7 +37,7 @@ def test_ingest_dataset_rejects_oversized_file(monkeypatch):
     _set_upload_limits(monkeypatch, max_bytes=16)
 
     with pytest.raises(UploadValidationError) as exc_info:
-        ingest_dataset("sample.csv", "正文\n这是一段文本\n".encode("utf-8"))
+        ingest_dataset("sample.csv", "正文\n这是一段文本\n".encode("utf-8"), owner_key="user_alpha")
     exc = exc_info.value
     assert exc.status_code == 413
     assert "上传文件过大" in str(exc)
@@ -46,7 +48,7 @@ def test_ingest_dataset_rejects_too_many_rows(monkeypatch):
     payload = "正文\n第一行\n第二行\n第三行\n".encode("utf-8")
 
     with pytest.raises(UploadValidationError) as exc_info:
-        ingest_dataset("sample.csv", payload)
+        ingest_dataset("sample.csv", payload, owner_key="user_alpha")
     exc = exc_info.value
     assert exc.status_code == 400
     assert "当前最多支持 2 行" in str(exc)
@@ -57,7 +59,7 @@ def test_ingest_dataset_rejects_too_many_columns(monkeypatch):
     payload = "标题,正文,标签\n评论1,内容,positive\n".encode("utf-8")
 
     with pytest.raises(UploadValidationError) as exc_info:
-        ingest_dataset("sample.csv", payload)
+        ingest_dataset("sample.csv", payload, owner_key="user_alpha")
     exc = exc_info.value
     assert exc.status_code == 400
     assert "当前最多支持 2 列" in str(exc)
@@ -68,18 +70,20 @@ def test_ingest_dataset_rejects_overlong_text(monkeypatch):
     payload = "正文\n这是一段超长文本\n".encode("utf-8")
 
     with pytest.raises(UploadValidationError) as exc_info:
-        ingest_dataset("sample.csv", payload)
+        ingest_dataset("sample.csv", payload, owner_key="user_alpha")
     assert "单条正文最多支持 4 个字符" in str(exc_info.value)
 
 
 def test_upload_dataset_returns_validation_error(monkeypatch):
     _set_upload_limits(monkeypatch, max_rows=1)
     monkeypatch.setattr(datasets_router, "save_dataset", lambda dataset, documents: None)
+    monkeypatch.setattr(datasets_router, "find_dataset_by_fingerprint", lambda fingerprint, owner_key=None: None)
     client = TestClient(app)
 
     response = client.post(
         "/api/datasets/upload",
         files={"file": ("sample.csv", "正文\n第一行\n第二行\n".encode("utf-8"), "text/csv")},
+        headers=USER_ALPHA,
     )
 
     assert response.status_code == 400
@@ -89,11 +93,13 @@ def test_upload_dataset_returns_validation_error(monkeypatch):
 def test_upload_dataset_returns_preview_on_success(monkeypatch):
     _set_upload_limits(monkeypatch)
     monkeypatch.setattr(datasets_router, "save_dataset", lambda dataset, documents: None)
+    monkeypatch.setattr(datasets_router, "find_dataset_by_fingerprint", lambda fingerprint, owner_key=None: None)
     client = TestClient(app)
 
     response = client.post(
         "/api/datasets/upload",
         files={"file": ("sample.csv", "标题,正文\n评论1,内容1\n评论2,内容2\n".encode("utf-8"), "text/csv")},
+        headers=USER_ALPHA,
     )
 
     body = response.json()
@@ -106,7 +112,7 @@ def test_upload_dataset_returns_preview_on_success(monkeypatch):
 def test_ingest_dataset_can_auto_detect_review_column():
     payload = "label,review\n1,很快，好吃，味道足，量大\n0,包装一般，但是送达及时\n".encode("utf-8")
 
-    dataset, documents = ingest_dataset("waimai_10k.csv", payload)
+    dataset, documents = ingest_dataset("waimai_10k.csv", payload, owner_key="user_alpha")
 
     assert dataset.text_column == "review"
     assert dataset.document_count == 2
@@ -116,7 +122,7 @@ def test_ingest_dataset_can_auto_detect_review_column():
 def test_ingest_dataset_can_auto_detect_text_like_column_without_standard_name():
     payload = "id,message_body,category\n1,这个平台的界面很清楚，操作也比较顺手,产品\n2,物流有点慢，不过客服回复挺及时,服务\n".encode("utf-8")
 
-    dataset, documents = ingest_dataset("custom.csv", payload)
+    dataset, documents = ingest_dataset("custom.csv", payload, owner_key="user_alpha")
 
     assert dataset.text_column == "message_body"
     assert dataset.document_count == 2

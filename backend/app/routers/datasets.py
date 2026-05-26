@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 
+from ..auth import get_user_key
 from ..models import (
     DatasetDetail,
     DatasetLibraryItem,
@@ -35,8 +36,8 @@ router = APIRouter(prefix="/datasets", tags=["datasets"])
 
 
 @router.get("", response_model=list[DatasetLibraryItem])
-def get_datasets():
-    analyses = list_analyses()
+def get_datasets(user_key: str = Depends(get_user_key)):
+    analyses = list_analyses(owner_key=user_key)
     dataset_stats: dict[str, dict[str, object]] = {}
     for run in analyses:
         stats = dataset_stats.setdefault(
@@ -66,22 +67,22 @@ def get_datasets():
             **dataset.model_dump(),
             **dataset_stats.get(dataset.id, {}),
         )
-        for dataset in list_datasets()
+        for dataset in list_datasets(owner_key=user_key)
     ]
 
 
 @router.post("/upload")
-async def upload_dataset(file: UploadFile = File(...)):
+async def upload_dataset(file: UploadFile = File(...), user_key: str = Depends(get_user_key)):
     payload = await file.read()
     try:
-        dataset, documents = ingest_dataset(file.filename or "dataset.csv", payload)
+        dataset, documents = ingest_dataset(file.filename or "dataset.csv", payload, owner_key=user_key)
     except UploadValidationError as exc:
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    existing = find_dataset_by_fingerprint(dataset.fingerprint or "")
+    existing = find_dataset_by_fingerprint(dataset.fingerprint or "", owner_key=user_key)
     if existing:
-        existing_payload = load_dataset(existing.id)
+        existing_payload = load_dataset(existing.id, owner_key=user_key)
         existing_documents = existing_payload["documents"]
         return {
             "dataset": existing,
@@ -94,17 +95,17 @@ async def upload_dataset(file: UploadFile = File(...)):
 
 
 @router.delete("/{dataset_id}")
-def remove_dataset(dataset_id: str):
-    deleted = delete_dataset_record(dataset_id)
+def remove_dataset(dataset_id: str, user_key: str = Depends(get_user_key)):
+    deleted = delete_dataset_record(dataset_id, owner_key=user_key)
     if not deleted:
         raise HTTPException(status_code=404, detail="Dataset not found")
     return {"ok": True, "dataset_id": dataset_id}
 
 
 @router.get("/{dataset_id}", response_model=DatasetDetail)
-def get_dataset(dataset_id: str, limit: int = Query(default=20, ge=1, le=200)):
+def get_dataset(dataset_id: str, limit: int = Query(default=20, ge=1, le=200), user_key: str = Depends(get_user_key)):
     try:
-        payload = load_dataset(dataset_id)
+        payload = load_dataset(dataset_id, owner_key=user_key)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Dataset not found") from exc
     preview_payload = dict(payload)
@@ -112,9 +113,9 @@ def get_dataset(dataset_id: str, limit: int = Query(default=20, ge=1, le=200)):
     return preview_payload
 
 
-def _load_dataset_and_workspace(dataset_id: str):
+def _load_dataset_and_workspace(dataset_id: str, user_key: str):
     try:
-        payload = load_dataset(dataset_id)
+        payload = load_dataset(dataset_id, owner_key=user_key)
         workspace = load_workspace(dataset_id)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Dataset not found") from exc
@@ -123,8 +124,8 @@ def _load_dataset_and_workspace(dataset_id: str):
 
 
 @router.get("/{dataset_id}/workspace", response_model=DatasetWorkspaceSnapshot)
-def get_dataset_workspace(dataset_id: str):
-    payload, documents, workspace = _load_dataset_and_workspace(dataset_id)
+def get_dataset_workspace(dataset_id: str, user_key: str = Depends(get_user_key)):
+    payload, documents, workspace = _load_dataset_and_workspace(dataset_id, user_key)
     return build_workspace_snapshot(
         workspace,
         documents,
@@ -133,8 +134,8 @@ def get_dataset_workspace(dataset_id: str):
 
 
 @router.get("/{dataset_id}/workspace/summary", response_model=DatasetWorkspaceOverview)
-def get_dataset_workspace_summary(dataset_id: str):
-    _, documents, workspace = _load_dataset_and_workspace(dataset_id)
+def get_dataset_workspace_summary(dataset_id: str, user_key: str = Depends(get_user_key)):
+    _, documents, workspace = _load_dataset_and_workspace(dataset_id, user_key)
     return build_workspace_overview(workspace, documents, top_k_terms=workspace.auto_top_k_terms)
 
 
@@ -144,8 +145,9 @@ def get_dataset_workspace_section(
     section: str,
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=50, ge=1, le=500),
+    user_key: str = Depends(get_user_key),
 ):
-    _, documents, workspace = _load_dataset_and_workspace(dataset_id)
+    _, documents, workspace = _load_dataset_and_workspace(dataset_id, user_key)
     try:
         return build_workspace_section_page(
             workspace,
@@ -160,64 +162,64 @@ def get_dataset_workspace_section(
 
 
 @router.put("/{dataset_id}/workspace", response_model=DatasetWorkspaceSnapshot)
-def update_dataset_workspace(dataset_id: str, patch: DatasetWorkspacePatch):
-    payload, documents, workspace = _load_dataset_and_workspace(dataset_id)
+def update_dataset_workspace(dataset_id: str, patch: DatasetWorkspacePatch, user_key: str = Depends(get_user_key)):
+    payload, documents, workspace = _load_dataset_and_workspace(dataset_id, user_key)
     updated = patch_workspace(workspace, patch)
     save_workspace(updated)
     return build_workspace_snapshot(updated, documents, top_k_terms=updated.auto_top_k_terms)
 
 
 @router.post("/{dataset_id}/workspace/custom-terms", response_model=DatasetWorkspaceSnapshot)
-def add_dataset_custom_terms(dataset_id: str, terms: list[str]):
-    payload, documents, workspace = _load_dataset_and_workspace(dataset_id)
+def add_dataset_custom_terms(dataset_id: str, terms: list[str], user_key: str = Depends(get_user_key)):
+    payload, documents, workspace = _load_dataset_and_workspace(dataset_id, user_key)
     updated = add_custom_terms(workspace, terms)
     save_workspace(updated)
     return build_workspace_snapshot(updated, documents, top_k_terms=updated.auto_top_k_terms)
 
 
 @router.delete("/{dataset_id}/workspace/custom-terms/{term}", response_model=DatasetWorkspaceSnapshot)
-def delete_dataset_custom_term(dataset_id: str, term: str):
-    payload, documents, workspace = _load_dataset_and_workspace(dataset_id)
+def delete_dataset_custom_term(dataset_id: str, term: str, user_key: str = Depends(get_user_key)):
+    payload, documents, workspace = _load_dataset_and_workspace(dataset_id, user_key)
     updated = remove_custom_term(workspace, term)
     save_workspace(updated)
     return build_workspace_snapshot(updated, documents, top_k_terms=updated.auto_top_k_terms)
 
 
 @router.post("/{dataset_id}/workspace/excluded-terms", response_model=DatasetWorkspaceSnapshot)
-def add_dataset_excluded_terms(dataset_id: str, terms: list[str]):
-    payload, documents, workspace = _load_dataset_and_workspace(dataset_id)
+def add_dataset_excluded_terms(dataset_id: str, terms: list[str], user_key: str = Depends(get_user_key)):
+    payload, documents, workspace = _load_dataset_and_workspace(dataset_id, user_key)
     updated = add_excluded_terms(workspace, terms)
     save_workspace(updated)
     return build_workspace_snapshot(updated, documents, top_k_terms=updated.auto_top_k_terms)
 
 
 @router.delete("/{dataset_id}/workspace/excluded-terms/{term}", response_model=DatasetWorkspaceSnapshot)
-def delete_dataset_excluded_term(dataset_id: str, term: str):
-    payload, documents, workspace = _load_dataset_and_workspace(dataset_id)
+def delete_dataset_excluded_term(dataset_id: str, term: str, user_key: str = Depends(get_user_key)):
+    payload, documents, workspace = _load_dataset_and_workspace(dataset_id, user_key)
     updated = remove_excluded_term(workspace, term)
     save_workspace(updated)
     return build_workspace_snapshot(updated, documents, top_k_terms=updated.auto_top_k_terms)
 
 
 @router.post("/{dataset_id}/workspace/synonym-groups", response_model=DatasetWorkspaceSnapshot)
-def put_dataset_synonym_group(dataset_id: str, group: SynonymGroup):
-    payload, documents, workspace = _load_dataset_and_workspace(dataset_id)
+def put_dataset_synonym_group(dataset_id: str, group: SynonymGroup, user_key: str = Depends(get_user_key)):
+    payload, documents, workspace = _load_dataset_and_workspace(dataset_id, user_key)
     updated = upsert_synonym_group(workspace, group)
     save_workspace(updated)
     return build_workspace_snapshot(updated, documents, top_k_terms=updated.auto_top_k_terms)
 
 
 @router.delete("/{dataset_id}/workspace/synonym-groups/{canonical_term}", response_model=DatasetWorkspaceSnapshot)
-def delete_dataset_synonym_group(dataset_id: str, canonical_term: str):
-    payload, documents, workspace = _load_dataset_and_workspace(dataset_id)
+def delete_dataset_synonym_group(dataset_id: str, canonical_term: str, user_key: str = Depends(get_user_key)):
+    payload, documents, workspace = _load_dataset_and_workspace(dataset_id, user_key)
     updated = remove_synonym_group(workspace, canonical_term)
     save_workspace(updated)
     return build_workspace_snapshot(updated, documents, top_k_terms=updated.auto_top_k_terms)
 
 
 @router.put("/{dataset_id}/workspace/curated-terms", response_model=DatasetWorkspaceSnapshot)
-def update_dataset_curated_terms(dataset_id: str, terms: list[str]):
-    payload, documents, workspace = _load_dataset_and_workspace(dataset_id)
+def update_dataset_curated_terms(dataset_id: str, terms: list[str], user_key: str = Depends(get_user_key)):
+    payload, documents, workspace = _load_dataset_and_workspace(dataset_id, user_key)
     updated = set_curated_terms(workspace, terms)
     save_workspace(updated)
     return build_workspace_snapshot(updated, documents, top_k_terms=updated.auto_top_k_terms)

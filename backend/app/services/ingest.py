@@ -195,6 +195,7 @@ def ingest_dataset(
     filename: str,
     payload: bytes,
     *,
+    owner_key: str = "local",
     deduplicate: bool = True,
     settings: Settings | None = None,
 ) -> Tuple[Dataset, List[Document]]:
@@ -243,6 +244,7 @@ def ingest_dataset(
     fingerprint = build_dataset_fingerprint(filename.rsplit(".", 1)[0], text_column, documents)
     dataset = Dataset(
         id=dataset_id,
+        owner_key=owner_key,
         name=filename.rsplit(".", 1)[0],
         source_filename=filename,
         created_at=datetime.now(timezone.utc),
