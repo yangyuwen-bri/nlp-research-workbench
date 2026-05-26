@@ -1,0 +1,77 @@
+# Secrets and local configuration
+.env
+*.env
+!.env.example
+!.env.release.example
+backend/.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+backend/.venv/
+experiments/**/.venv/
+
+# Node / Next.js
+node_modules/
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/tsconfig.tsbuildinfo
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Runtime product data
+backend/data/
+backend/dev_seed_archive/
+backend/dev_cleanup_archive/
+
+# Internal research, benchmark, demo, and temporary assets
+bench_data/
+benchmarks/
+fixtures/
+experiments/
+design_demos/
+doc/test_reports/
+tmpdata/
+tmpbench/
+.playwright-mcp/
+frontend/app/api/benchmark-snapshot/
+scripts/benchmark_eval_helpers.py
+scripts/build_public_demos.py
+scripts/check_release_readiness.py
+scripts/compare_product_modules.py
+scripts/download_benchmark_datasets.py
+scripts/generate_topic_review_sheet.py
+scripts/public_benchmark_sources.py
+scripts/run_benchmark_suite.py
+scripts/run_public_benchmarks.py
+backend/tests/test_benchmark_eval_helpers.py
+backend/tests/test_download_benchmark_datasets.py
+backend/tests/test_public_benchmark_sources.py
+backend/tests/test_release_readiness.py
+backend/tests/test_topic_review_sheet.py
+
+# OS and editor noise
+.DS_Store
+*.swp
+*.swo
+
+# Local screenshots and scratch notes
+frontend-after-*.png
+frontend-current.png
+frontend-final-state.png
+frontend-no-prompt-badge.png
+frontend-upload-left.png
+waimai-report-preview.png
+latest-page.md
+.deploy_keys/
