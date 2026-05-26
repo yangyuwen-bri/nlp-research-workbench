@@ -1,0 +1,95 @@
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-nlp_workbench}
+      POSTGRES_USER: ${POSTGRES_USER:-nlp}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-nlp}
+    volumes:
+      - nlp_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-nlp} -d ${POSTGRES_DB:-nlp_workbench}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7
+    restart: unless-stopped
+    volumes:
+      - nlp_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: ..
+      dockerfile: backend/Dockerfile
+      args:
+        REQUIREMENTS_FILE: backend/requirements.deploy.txt
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    env_file:
+      - ../backend/.env.deploy
+    environment:
+      APP_ENV: production
+      STRICT_STARTUP_CHECKS: "true"
+      STORAGE_BACKEND: postgres
+      TASK_QUEUE_BACKEND: redis
+      TASK_QUEUE_NAME: analysis_jobs
+      DATABASE_URL: postgresql://${POSTGRES_USER:-nlp}:${POSTGRES_PASSWORD:-nlp}@postgres:5432/${POSTGRES_DB:-nlp_workbench}
+      REDIS_URL: redis://redis:6379/0
+    ports:
+      - "127.0.0.1:8101:8000"
+
+  worker:
+    build:
+      context: ..
+      dockerfile: backend/Dockerfile
+      args:
+        REQUIREMENTS_FILE: backend/requirements.deploy.txt
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    env_file:
+      - ../backend/.env.deploy
+    environment:
+      APP_ENV: production
+      STRICT_STARTUP_CHECKS: "true"
+      STORAGE_BACKEND: postgres
+      TASK_QUEUE_BACKEND: redis
+      TASK_QUEUE_NAME: analysis_jobs
+      DATABASE_URL: postgresql://${POSTGRES_USER:-nlp}:${POSTGRES_PASSWORD:-nlp}@postgres:5432/${POSTGRES_DB:-nlp_workbench}
+      REDIS_URL: redis://redis:6379/0
+      PYTHONPATH: /app/backend
+    working_dir: /app/backend
+    command: ["python", "/app/scripts/run_analysis_worker.py"]
+
+  frontend:
+    build:
+      context: ..
+      dockerfile: frontend/Dockerfile
+      args:
+        NEXT_PUBLIC_API_BASE_URL: ""
+    restart: unless-stopped
+    depends_on:
+      - backend
+    environment:
+      NEXT_PUBLIC_API_BASE_URL: ""
+    ports:
+      - "127.0.0.1:3101:3000"
+
+volumes:
+  nlp_postgres_data:
+  nlp_redis_data:

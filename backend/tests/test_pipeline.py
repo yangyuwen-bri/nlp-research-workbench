@@ -1,6 +1,9 @@
+import pytest
+
 from app.services.analyze import run_analysis
 from app.services.ingest import ingest_dataset
 from app.models import DatasetWorkspace, LabelSchema, RunAnalysisRequest, SynonymGroup
+from app.services.local_models import LocalModelError
 from app.services.workspace import build_workspace_snapshot
 
 
@@ -121,6 +124,25 @@ def test_sentiment_stage_runs_only_sentiment():
     assert run.settings["topic_strategy"] == "not_requested"
     assert run.settings["sentiment_strategy"] == "public-benchmark-sentiment"
     assert run.settings["classification_strategy"] == "not_requested"
+
+
+def test_sentiment_stage_surfaces_local_model_failures_without_validation_errors(monkeypatch):
+    dataset, documents = ingest_dataset("sample.csv", SAMPLE.encode("utf-8"))
+    request = RunAnalysisRequest(
+        dataset_id=dataset.id,
+        analysis_stage="sentiment",
+        use_llm=False,
+        write_exports=False,
+        export_xlsx=False,
+    )
+
+    def fail_sentiment(*args, **kwargs):
+        raise LocalModelError("sentiment offline")
+
+    monkeypatch.setattr("app.services.analyze.analyze_sentiments_with_local_models", fail_sentiment)
+
+    with pytest.raises(LocalModelError, match="sentiment offline"):
+        run_analysis(dataset, documents, request)
 
 
 def test_classification_stage_requires_confirmed_labels():

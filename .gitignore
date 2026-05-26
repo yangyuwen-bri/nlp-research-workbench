@@ -4,6 +4,7 @@
 !.env.example
 !.env.release.example
 backend/.env
+backend/.env.deploy
 
 # Python
 __pycache__/

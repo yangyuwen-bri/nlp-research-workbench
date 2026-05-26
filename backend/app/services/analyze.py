@@ -251,7 +251,7 @@ def run_analysis(
                 requested=True,
                 attempted=True,
                 used=False,
-                status="failed",
+                status="degraded",
                 model=settings.local_sentiment_model,
                 strategy="strict-production-sentiment",
                 message=f"情感分析主链不可用：{exc}",
