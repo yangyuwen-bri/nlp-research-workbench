@@ -98,6 +98,8 @@ button:disabled {
   top: 14px;
   align-self: start;
   height: calc(100vh - 28px);
+  min-height: 0;
+  overflow: hidden;
   display: block;
 }
 
@@ -113,13 +115,17 @@ button:disabled {
 .sidebar-panel {
   padding: 16px;
   background: var(--panel);
+  height: 100%;
 }
 
 .sidebar-primary {
-  min-height: 100%;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   gap: 20px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
 }
 
 .brand-block {
@@ -876,6 +882,16 @@ button:disabled {
 
   .sidebar {
     position: static;
+    height: auto;
+    overflow: visible;
+  }
+
+  .sidebar-panel {
+    height: auto;
+  }
+
+  .sidebar-primary {
+    overflow: visible;
   }
 
   .split-panel,
