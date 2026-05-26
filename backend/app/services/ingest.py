@@ -4,6 +4,7 @@ import io
 import json
 import re
 import uuid
+import hashlib
 from datetime import datetime, timezone
 from typing import List, Tuple
 
@@ -169,6 +170,27 @@ def _pick_text_column(frame: pd.DataFrame) -> str:
     )
 
 
+def build_dataset_fingerprint(name: str, text_column: str, documents: List[Document]) -> str:
+    fingerprint_payload = [
+        {
+            "title": document.title or "",
+            "content": document.content,
+            "metadata": document.metadata,
+        }
+        for document in documents
+    ]
+    fingerprint_source = json.dumps(
+        {
+            "name": name,
+            "text_column": text_column,
+            "documents": fingerprint_payload,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    return hashlib.sha256(fingerprint_source.encode("utf-8")).hexdigest()
+
+
 def ingest_dataset(
     filename: str,
     payload: bytes,
@@ -218,6 +240,7 @@ def ingest_dataset(
         )
     if not documents:
         raise UploadValidationError("未读取到有效正文，请确认正文列中包含文本内容。")
+    fingerprint = build_dataset_fingerprint(filename.rsplit(".", 1)[0], text_column, documents)
     dataset = Dataset(
         id=dataset_id,
         name=filename.rsplit(".", 1)[0],
@@ -225,5 +248,6 @@ def ingest_dataset(
         created_at=datetime.now(timezone.utc),
         document_count=len(documents),
         text_column=text_column,
+        fingerprint=fingerprint,
     )
     return dataset, documents

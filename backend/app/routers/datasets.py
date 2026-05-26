@@ -27,6 +27,8 @@ from ..services.workspace import (
     upsert_synonym_group,
 )
 from ..storage import list_analyses, list_datasets, load_dataset, load_workspace, save_dataset, save_workspace
+from ..storage import delete_dataset as delete_dataset_record
+from ..storage import find_dataset_by_fingerprint
 
 
 router = APIRouter(prefix="/datasets", tags=["datasets"])
@@ -77,8 +79,26 @@ async def upload_dataset(file: UploadFile = File(...)):
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    existing = find_dataset_by_fingerprint(dataset.fingerprint or "")
+    if existing:
+        existing_payload = load_dataset(existing.id)
+        existing_documents = existing_payload["documents"]
+        return {
+            "dataset": existing,
+            "documents": existing_documents[:5],
+            "preview_count": min(5, len(existing_documents)),
+            "reused_existing": True,
+        }
     save_dataset(dataset, documents)
-    return {"dataset": dataset, "documents": documents[:5], "preview_count": min(5, len(documents))}
+    return {"dataset": dataset, "documents": documents[:5], "preview_count": min(5, len(documents)), "reused_existing": False}
+
+
+@router.delete("/{dataset_id}")
+def remove_dataset(dataset_id: str):
+    deleted = delete_dataset_record(dataset_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    return {"ok": True, "dataset_id": dataset_id}
 
 
 @router.get("/{dataset_id}", response_model=DatasetDetail)

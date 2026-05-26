@@ -28,6 +28,7 @@ class Dataset(BaseModel):
     document_count: int
     text_column: str
     labels: List[str] = Field(default_factory=list)
+    fingerprint: Optional[str] = None
 
 
 class SynonymGroup(BaseModel):

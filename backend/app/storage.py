@@ -10,6 +10,7 @@ from typing import Any, Dict, Iterator, List, Optional
 
 from .models import AnalysisRun, AnalysisRunSummary, Dataset, DatasetWorkspace, Document, ExportArtifactSummary
 from .settings import get_settings
+from .services.ingest import build_dataset_fingerprint
 
 try:
     import psycopg
@@ -54,6 +55,14 @@ class StorageBackend(ABC):
 
     @abstractmethod
     def list_datasets(self) -> List[Dataset]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def find_dataset_by_fingerprint(self, fingerprint: str) -> Optional[Dataset]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def delete_dataset(self, dataset_id: str) -> bool:
         raise NotImplementedError
 
     @abstractmethod
@@ -120,6 +129,40 @@ class JsonStorageBackend(StorageBackend):
             payload = _read_json(path)
             datasets.append(Dataset.model_validate(payload["dataset"]))
         return datasets
+
+    def find_dataset_by_fingerprint(self, fingerprint: str) -> Optional[Dataset]:
+        if not fingerprint:
+            return None
+        for dataset in self.list_datasets():
+            candidate_fingerprint = dataset.fingerprint
+            if not candidate_fingerprint:
+                try:
+                    payload = self.load_dataset(dataset.id)
+                    documents = [Document.model_validate(item) for item in payload["documents"]]
+                    candidate_fingerprint = build_dataset_fingerprint(dataset.name, dataset.text_column, documents)
+                except Exception:
+                    candidate_fingerprint = None
+            if candidate_fingerprint == fingerprint:
+                return dataset
+        return None
+
+    def delete_dataset(self, dataset_id: str) -> bool:
+        dataset_path = self.datasets_dir / f"{dataset_id}.json"
+        if not dataset_path.exists():
+            return False
+        dataset_path.unlink(missing_ok=True)
+        for analysis_path in self.analyses_dir.glob("*.json"):
+            payload = _read_json(analysis_path)
+            if payload.get("dataset_id") != dataset_id:
+                continue
+            run_id = str(payload.get("id") or analysis_path.stem)
+            analysis_path.unlink(missing_ok=True)
+            export_dir = EXPORTS_DIR / run_id
+            if export_dir.exists():
+                for child in export_dir.iterdir():
+                    child.unlink(missing_ok=True)
+                export_dir.rmdir()
+        return True
 
     def save_workspace(self, workspace: DatasetWorkspace) -> None:
         path = self.datasets_dir / f"{workspace.dataset_id}.json"
@@ -202,8 +245,12 @@ CREATE TABLE IF NOT EXISTS datasets (
     document_count INTEGER NOT NULL,
     text_column TEXT NOT NULL,
     labels JSONB NOT NULL,
+    fingerprint TEXT NULL,
     dataset_json JSONB NOT NULL
 );
+
+CREATE INDEX IF NOT EXISTS idx_datasets_fingerprint
+    ON datasets(fingerprint);
 
 CREATE TABLE IF NOT EXISTS documents (
     id TEXT PRIMARY KEY,
@@ -268,6 +315,8 @@ class PostgresStorageBackend(StorageBackend):
         with self._connect() as conn:
             with conn.cursor() as cur:
                 cur.execute(POSTGRES_SCHEMA)
+                cur.execute("ALTER TABLE datasets ADD COLUMN IF NOT EXISTS fingerprint TEXT NULL")
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_datasets_fingerprint ON datasets(fingerprint)")
             conn.commit()
 
     def save_dataset(self, dataset: Dataset, documents: List[Document]) -> None:
@@ -278,10 +327,10 @@ class PostgresStorageBackend(StorageBackend):
                 cur.execute(
                     """
                     INSERT INTO datasets (
-                        id, name, source_filename, language, created_at, document_count, text_column, labels, dataset_json
+                        id, name, source_filename, language, created_at, document_count, text_column, labels, fingerprint, dataset_json
                     ) VALUES (
                         %(id)s, %(name)s, %(source_filename)s, %(language)s, %(created_at)s, %(document_count)s,
-                        %(text_column)s, %(labels)s::jsonb, %(dataset_json)s::jsonb
+                        %(text_column)s, %(labels)s::jsonb, %(fingerprint)s, %(dataset_json)s::jsonb
                     )
                     ON CONFLICT (id) DO UPDATE SET
                         name = EXCLUDED.name,
@@ -291,6 +340,7 @@ class PostgresStorageBackend(StorageBackend):
                         document_count = EXCLUDED.document_count,
                         text_column = EXCLUDED.text_column,
                         labels = EXCLUDED.labels,
+                        fingerprint = EXCLUDED.fingerprint,
                         dataset_json = EXCLUDED.dataset_json
                     """,
                     {
@@ -302,6 +352,7 @@ class PostgresStorageBackend(StorageBackend):
                         "document_count": dataset.document_count,
                         "text_column": dataset.text_column,
                         "labels": labels_json,
+                        "fingerprint": dataset.fingerprint,
                         "dataset_json": dataset_json,
                     },
                 )
@@ -381,6 +432,49 @@ class PostgresStorageBackend(StorageBackend):
                 cur.execute("SELECT dataset_json FROM datasets ORDER BY created_at DESC, id ASC")
                 rows = cur.fetchall()
         return [Dataset.model_validate(row["dataset_json"]) for row in rows]
+
+    def find_dataset_by_fingerprint(self, fingerprint: str) -> Optional[Dataset]:
+        if not fingerprint:
+            return None
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT dataset_json FROM datasets WHERE fingerprint = %s ORDER BY created_at DESC, id DESC LIMIT 1",
+                    (fingerprint,),
+                )
+                row = cur.fetchone()
+        if row:
+            return Dataset.model_validate(row["dataset_json"])
+        for dataset in self.list_datasets():
+            if dataset.fingerprint:
+                continue
+            try:
+                payload = self.load_dataset(dataset.id)
+                documents = [Document.model_validate(item) for item in payload["documents"]]
+                candidate_fingerprint = build_dataset_fingerprint(dataset.name, dataset.text_column, documents)
+            except Exception:
+                continue
+            if candidate_fingerprint == fingerprint:
+                return dataset
+        return None
+
+    def delete_dataset(self, dataset_id: str) -> bool:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT id FROM analysis_runs WHERE dataset_id = %s", (dataset_id,))
+                run_rows = cur.fetchall()
+                run_ids = [str(row["id"]) for row in run_rows]
+                cur.execute("DELETE FROM datasets WHERE id = %s", (dataset_id,))
+                deleted = cur.rowcount > 0
+            conn.commit()
+        if deleted:
+            for run_id in run_ids:
+                export_dir = EXPORTS_DIR / run_id
+                if export_dir.exists():
+                    for child in export_dir.iterdir():
+                        child.unlink(missing_ok=True)
+                    export_dir.rmdir()
+        return deleted
 
     def save_workspace(self, workspace: DatasetWorkspace) -> None:
         payload = json.dumps(workspace.model_dump(mode="json"), ensure_ascii=False, default=_json_default)
@@ -557,6 +651,14 @@ def load_dataset(dataset_id: str) -> Dict[str, Any]:
 
 def list_datasets() -> List[Dataset]:
     return get_storage_backend().list_datasets()
+
+
+def find_dataset_by_fingerprint(fingerprint: str) -> Optional[Dataset]:
+    return get_storage_backend().find_dataset_by_fingerprint(fingerprint)
+
+
+def delete_dataset(dataset_id: str) -> bool:
+    return get_storage_backend().delete_dataset(dataset_id)
 
 
 def save_workspace(workspace: DatasetWorkspace) -> None:

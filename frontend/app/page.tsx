@@ -9,6 +9,7 @@ type Dataset = {
   source_filename: string;
   created_at: string;
   text_column?: string;
+  fingerprint?: string | null;
   analysis_count?: number;
   completed_analysis_count?: number;
   failed_analysis_count?: number;
@@ -785,14 +786,54 @@ export default function Home() {
       setSynonymAliasesInput("");
       uploadFormRef.current?.reset();
       if (fileInputRef.current) fileInputRef.current.value = "";
-      setStatusMessage("上传完成。");
+      setStatusMessage(payload.reused_existing ? "已复用已有数据集。" : "上传完成。");
       void refreshWorkspace(nextDataset.id, { silent: true });
       void refreshAnalysisHistory(nextDataset.id, true);
       void refreshExportHistory(nextDataset.id);
+      void refreshDatasets();
     } catch {
       setStatusMessage("上传失败，请检查服务是否已启动。");
     } finally {
       setIsUploading(false);
+    }
+  }
+
+  async function deleteCurrentDataset() {
+    if (!selectedDatasetId || !selectedDataset) {
+      setStatusMessage("请先选择数据集。");
+      return;
+    }
+    const confirmed = window.confirm(`确认删除数据集“${selectedDataset.name}”吗？这会同时删除相关分析记录和导出记录。`);
+    if (!confirmed) return;
+    setWorkspaceSaving(true);
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/datasets/${selectedDatasetId}`, { method: "DELETE" });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => null);
+        setStatusMessage(payload?.detail ?? "删除失败。");
+        return;
+      }
+      setDatasets((current) => current.filter((item) => item.id !== selectedDatasetId));
+      setSelectedDatasetId("");
+      setDatasetDetail(null);
+      setWorkspaceOverview(null);
+      setWorkspaceSectionRows({});
+      setWorkspaceSectionTotals({});
+      setWorkspaceSectionLoading({});
+      setAnalysis(null);
+      setAnalysisHistory([]);
+      setExportHistory([]);
+      setSectionRows({});
+      setSectionTotals({});
+      setSectionLoading({});
+      setActiveTab("dataset");
+      setSearchQuery("");
+      setStatusMessage("数据集已删除。");
+      void refreshDatasets();
+    } catch {
+      setStatusMessage("删除失败。");
+    } finally {
+      setWorkspaceSaving(false);
     }
   }
 
@@ -1649,6 +1690,11 @@ export default function Home() {
                   </option>
                 ))}
               </select>
+              <div className="sidebar-upload-actions">
+                <button className="ghost-button" disabled={!selectedDatasetId || workspaceSaving} onClick={() => void deleteCurrentDataset()} type="button">
+                  删除当前数据集
+                </button>
+              </div>
             </div>
 
             <div className="module-nav" aria-label="分析模块">

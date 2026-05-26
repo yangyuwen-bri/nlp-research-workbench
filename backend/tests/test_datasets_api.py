@@ -140,3 +140,42 @@ def test_get_dataset_returns_preview_documents_by_default(monkeypatch, tmp_path)
     assert payload["dataset"]["id"] == dataset.id
     assert len(payload["documents"]) == 20
     assert payload["documents"][0]["source_row"] == 1
+
+
+def test_upload_dataset_reuses_existing_fingerprint(monkeypatch, tmp_path):
+    _configure_storage_dirs(monkeypatch, tmp_path)
+    client = TestClient(app)
+    payload = (
+        "标题,正文\n"
+        "评论1,配送很快\n"
+        "评论2,味道不错\n"
+    ).encode("utf-8")
+
+    first = client.post("/api/datasets/upload", files={"file": ("demo.csv", payload, "text/csv")})
+    second = client.post("/api/datasets/upload", files={"file": ("demo.csv", payload, "text/csv")})
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    first_body = first.json()
+    second_body = second.json()
+    assert first_body["reused_existing"] is False
+    assert second_body["reused_existing"] is True
+    assert second_body["dataset"]["id"] == first_body["dataset"]["id"]
+
+    listed = client.get("/api/datasets")
+    assert listed.status_code == 200
+    assert len(listed.json()) == 1
+
+
+def test_delete_dataset_removes_dataset(monkeypatch, tmp_path):
+    _configure_storage_dirs(monkeypatch, tmp_path)
+    dataset, documents = _build_dataset("ds_delete_me")
+    save_dataset(dataset, documents)
+
+    client = TestClient(app)
+    response = client.delete(f"/api/datasets/{dataset.id}")
+
+    assert response.status_code == 200
+    listed = client.get("/api/datasets")
+    assert listed.status_code == 200
+    assert listed.json() == []
