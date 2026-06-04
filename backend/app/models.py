@@ -24,6 +24,10 @@ class Dataset(BaseModel):
     owner_key: str = "local"
     name: str
     source_filename: str
+    source_type: Literal["upload", "library", "connector"] = "upload"
+    source_label: Optional[str] = None
+    source_reference: Optional[str] = None
+    source_meta: Dict[str, Any] = Field(default_factory=dict)
     language: str = "zh-CN"
     created_at: datetime
     document_count: int
@@ -272,6 +276,10 @@ class DatasetLibraryItem(BaseModel):
     id: str
     name: str
     source_filename: str
+    source_type: Literal["upload", "library", "connector"] = "upload"
+    source_label: Optional[str] = None
+    source_reference: Optional[str] = None
+    source_meta: Dict[str, Any] = Field(default_factory=dict)
     language: str = "zh-CN"
     created_at: datetime
     document_count: int
@@ -353,3 +361,115 @@ class WorkspaceSectionPage(BaseModel):
     page_size: int
     total: int
     items: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+class DataSourceAsset(BaseModel):
+    id: str
+    name: str
+    category: str
+    kind: Literal["builtin"]
+    description: str
+    source_name: str
+    source_url: str
+    license: str = "public-demo"
+    language: str = "zh-CN"
+    document_count: int
+    recommended_modules: List[str] = Field(default_factory=list)
+    fields: List[str] = Field(default_factory=list)
+    tags: List[str] = Field(default_factory=list)
+    notes: str = ""
+
+
+class DataSourceImportRecord(BaseModel):
+    dataset_id: str
+    dataset_name: str
+    source_type: Literal["library", "connector"]
+    source_label: Optional[str] = None
+    source_reference: Optional[str] = None
+    created_at: datetime
+    document_count: int
+
+
+class SourceConnectorItem(BaseModel):
+    id: str
+    name: str
+    description: str
+    input_hint: str
+    status: Literal["ready", "beta"] = "ready"
+    supports_preview: bool = True
+    supports_import: bool = True
+
+
+class OpenAlexPreviewRequest(BaseModel):
+    query: str = Field(min_length=2, max_length=120)
+    limit: int = Field(default=10, ge=1, le=20)
+
+
+class OpenAlexPreviewRow(BaseModel):
+    external_id: str
+    title: str
+    abstract: str
+    publication_year: Optional[int] = None
+    authors: List[str] = Field(default_factory=list)
+    source_name: Optional[str] = None
+    source_url: Optional[str] = None
+
+
+class OpenAlexPreviewResponse(BaseModel):
+    connector: Literal["openalex"] = "openalex"
+    query: str
+    total_returned: int
+    items: List[OpenAlexPreviewRow] = Field(default_factory=list)
+
+
+class OpenAlexImportRequest(BaseModel):
+    query: str = Field(min_length=2, max_length=120)
+    limit: int = Field(default=50, ge=5, le=200)
+
+
+class HuggingFaceSearchRequest(BaseModel):
+    query: str = Field(min_length=2, max_length=120)
+    limit: int = Field(default=8, ge=1, le=20)
+
+
+class HuggingFaceDatasetCandidate(BaseModel):
+    dataset_id: str
+    author: Optional[str] = None
+    description: str = ""
+    likes: int = 0
+    downloads: int = 0
+    last_modified: Optional[str] = None
+
+
+class HuggingFaceSearchResponse(BaseModel):
+    connector: Literal["huggingface"] = "huggingface"
+    query: str
+    total_returned: int
+    items: List[HuggingFaceDatasetCandidate] = Field(default_factory=list)
+
+
+class HuggingFacePreviewRequest(BaseModel):
+    dataset_id: str = Field(min_length=3, max_length=200)
+    limit: int = Field(default=8, ge=1, le=20)
+
+
+class HuggingFacePreviewRow(BaseModel):
+    row_idx: int
+    text: str
+    title: Optional[str] = None
+    label: Optional[str] = None
+    raw: Dict[str, Any] = Field(default_factory=dict)
+
+
+class HuggingFacePreviewResponse(BaseModel):
+    connector: Literal["huggingface"] = "huggingface"
+    dataset_id: str
+    config: str
+    split: str
+    total_returned: int
+    items: List[HuggingFacePreviewRow] = Field(default_factory=list)
+
+
+class HuggingFaceImportRequest(BaseModel):
+    dataset_id: str = Field(min_length=3, max_length=200)
+    limit: int = Field(default=100, ge=5, le=300)

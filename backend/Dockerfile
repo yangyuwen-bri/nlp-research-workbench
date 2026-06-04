@@ -21,6 +21,7 @@ RUN pip install --upgrade pip && pip install -r /app/${REQUIREMENTS_FILE}
 
 COPY backend /app/backend
 COPY bench_data /app/bench_data
+COPY fixtures /app/fixtures
 COPY scripts /app/scripts
 
 WORKDIR /app/backend

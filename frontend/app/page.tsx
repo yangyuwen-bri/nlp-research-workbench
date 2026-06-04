@@ -7,6 +7,10 @@ type Dataset = {
   name: string;
   document_count: number;
   source_filename: string;
+  source_type?: "upload" | "library" | "connector";
+  source_label?: string | null;
+  source_reference?: string | null;
+  source_meta?: Record<string, unknown>;
   created_at: string;
   text_column?: string;
   fingerprint?: string | null;
@@ -104,6 +108,93 @@ type ExportArtifactSummary = ExportArtifact & {
   created_at: string;
 };
 
+type DataSourceAsset = {
+  id: string;
+  name: string;
+  category: string;
+  kind: "builtin";
+  description: string;
+  source_name: string;
+  source_url: string;
+  license: string;
+  language: string;
+  document_count: number;
+  recommended_modules: string[];
+  fields: string[];
+  tags: string[];
+  notes: string;
+};
+
+type DataSourceImportRecord = {
+  dataset_id: string;
+  dataset_name: string;
+  source_type: "library" | "connector";
+  source_label?: string | null;
+  source_reference?: string | null;
+  created_at: string;
+  document_count: number;
+};
+
+type SourceConnectorItem = {
+  id: string;
+  name: string;
+  description: string;
+  input_hint: string;
+  status: "ready" | "beta";
+  supports_preview: boolean;
+  supports_import: boolean;
+};
+
+type OpenAlexPreviewRow = {
+  external_id: string;
+  title: string;
+  abstract: string;
+  publication_year?: number | null;
+  authors: string[];
+  source_name?: string | null;
+  source_url?: string | null;
+};
+
+type OpenAlexPreviewResponse = {
+  connector: "openalex";
+  query: string;
+  total_returned: number;
+  items: OpenAlexPreviewRow[];
+};
+
+type HuggingFaceDatasetCandidate = {
+  dataset_id: string;
+  author?: string | null;
+  description: string;
+  likes: number;
+  downloads: number;
+  last_modified?: string | null;
+};
+
+type HuggingFaceSearchResponse = {
+  connector: "huggingface";
+  query: string;
+  total_returned: number;
+  items: HuggingFaceDatasetCandidate[];
+};
+
+type HuggingFacePreviewRow = {
+  row_idx: number;
+  text: string;
+  title?: string | null;
+  label?: string | null;
+  raw: Record<string, unknown>;
+};
+
+type HuggingFacePreviewResponse = {
+  connector: "huggingface";
+  dataset_id: string;
+  config: string;
+  split: string;
+  total_returned: number;
+  items: HuggingFacePreviewRow[];
+};
+
 type TableRow = Record<string, string | number | boolean | null>;
 
 type AnalysisOverviewSummary = {
@@ -185,6 +276,9 @@ type TabId =
   | "classification"
   | "report"
   | "exports";
+
+type SourceTabId = "library" | "connectors" | "imports";
+type WorkspaceMode = "sources" | "analysis";
 
 type AnalysisStage = "explore" | "topics" | "discover" | "sentiment" | "classify" | "full";
 
@@ -413,10 +507,23 @@ export default function Home() {
   const [workspaceLoading, setWorkspaceLoading] = useState(false);
   const [workspaceSaving, setWorkspaceSaving] = useState(false);
   const [statusMessage, setStatusMessage] = useState("");
+  const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>("sources");
   const [activeTab, setActiveTab] = useState<TabId>("dataset");
   const [searchQuery, setSearchQuery] = useState("");
   const [tablePage, setTablePage] = useState(1);
   const [selectedUploadName, setSelectedUploadName] = useState("");
+  const [sourceTab, setSourceTab] = useState<SourceTabId>("library");
+  const [sourceAssets, setSourceAssets] = useState<DataSourceAsset[]>([]);
+  const [sourceConnectors, setSourceConnectors] = useState<SourceConnectorItem[]>([]);
+  const [sourceImports, setSourceImports] = useState<DataSourceImportRecord[]>([]);
+  const [sourceQuery, setSourceQuery] = useState("");
+  const [sourceLoading, setSourceLoading] = useState(false);
+  const [sourceActionKey, setSourceActionKey] = useState("");
+  const [openAlexQuery, setOpenAlexQuery] = useState("");
+  const [openAlexPreview, setOpenAlexPreview] = useState<OpenAlexPreviewResponse | null>(null);
+  const [hfQuery, setHfQuery] = useState("");
+  const [hfSearch, setHfSearch] = useState<HuggingFaceSearchResponse | null>(null);
+  const [hfPreview, setHfPreview] = useState<HuggingFacePreviewResponse | null>(null);
   const [reportDraft, setReportDraft] = useState("");
   const [isUploading, setIsUploading] = useState(false);
   const [customTermInput, setCustomTermInput] = useState("");
@@ -471,6 +578,17 @@ export default function Home() {
       filterRows([{ name: topic.name, summary: topic.summary, keywords: topic.keywords.join(" / ") }], deferredQuery).length > 0,
     );
   }, [activeRun?.previews.topics, deferredQuery]);
+
+  const visibleSourceAssets = useMemo(() => {
+    const normalized = sourceQuery.trim().toLowerCase();
+    if (!normalized) return sourceAssets;
+    return sourceAssets.filter((asset) =>
+      [asset.name, asset.category, asset.description, asset.tags.join(" / "), asset.source_name]
+        .join(" ")
+        .toLowerCase()
+        .includes(normalized),
+    );
+  }, [sourceAssets, sourceQuery]);
 
   const candidateCuratedTerms = useMemo(() => {
     const set = new Set<string>();
@@ -527,6 +645,7 @@ export default function Home() {
   useEffect(() => {
     if (!userKey) return;
     void refreshDatasets();
+    void refreshSourceData();
   }, [userKey]);
 
   useEffect(() => {
@@ -625,6 +744,30 @@ export default function Home() {
     const payload = await parseJson<Dataset[]>(response);
     setDatasets(payload);
     setSelectedDatasetId((current) => (current && payload.some((item) => item.id === current) ? current : ""));
+  }
+
+  async function refreshSourceData() {
+    setSourceLoading(true);
+    try {
+      const [libraryResult, connectorsResult, importsResult] = await Promise.allSettled([
+        fetch(`${API_BASE_URL}/api/sources/library`, { cache: "no-store" }),
+        fetch(`${API_BASE_URL}/api/sources/connectors`, { cache: "no-store" }),
+        apiFetch("/api/sources/imports"),
+      ]);
+      if (libraryResult.status === "fulfilled" && libraryResult.value.ok) {
+        setSourceAssets(await parseJson<DataSourceAsset[]>(libraryResult.value));
+      }
+      if (connectorsResult.status === "fulfilled" && connectorsResult.value.ok) {
+        setSourceConnectors(await parseJson<SourceConnectorItem[]>(connectorsResult.value));
+      }
+      if (importsResult.status === "fulfilled" && importsResult.value.ok) {
+        setSourceImports(await parseJson<DataSourceImportRecord[]>(importsResult.value));
+      } else if (importsResult.status === "rejected") {
+        setSourceImports([]);
+      }
+    } finally {
+      setSourceLoading(false);
+    }
   }
 
   async function refreshDatasetDetail(datasetId: string) {
@@ -797,6 +940,7 @@ export default function Home() {
       setSectionTotals({});
       setSectionLoading({});
       setActiveTab("dataset");
+      setWorkspaceMode("analysis");
       setSearchQuery("");
       setSelectedUploadName("");
       setCustomTermInput("");
@@ -814,6 +958,227 @@ export default function Home() {
       setStatusMessage("上传失败，请检查服务是否已启动。");
     } finally {
       setIsUploading(false);
+    }
+  }
+
+  async function importBuiltinAsset(asset: DataSourceAsset) {
+    setSourceActionKey(`library:${asset.id}`);
+    setStatusMessage(`正在导入 ${asset.name}...`);
+    try {
+      const response = await apiFetch(`/api/sources/library/${asset.id}/import`, { method: "POST" });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => null);
+        setStatusMessage(payload?.detail ?? "导入失败。");
+        return;
+      }
+      const payload = await response.json();
+      const nextDataset = payload.dataset as Dataset;
+      setDatasets((current) => [nextDataset, ...current.filter((item) => item.id !== nextDataset.id)]);
+      setDatasetDetail({
+        dataset: nextDataset,
+        documents: (payload.documents as DatasetDocument[]) ?? [],
+        workspace: null,
+      });
+      setSelectedDatasetId(nextDataset.id);
+      setWorkspaceOverview(null);
+      setWorkspaceSectionRows({});
+      setWorkspaceSectionTotals({});
+      setWorkspaceSectionLoading({});
+      setAnalysis(null);
+      setSectionRows({});
+      setSectionTotals({});
+      setSectionLoading({});
+      setActiveTab("dataset");
+      setWorkspaceMode("analysis");
+      setStatusMessage(payload.reused_existing ? `已复用 ${asset.name} 数据集。` : `已导入 ${asset.name}。`);
+      void refreshWorkspace(nextDataset.id, { silent: true });
+      void refreshAnalysisHistory(nextDataset.id, true);
+      void refreshExportHistory(nextDataset.id);
+      void refreshDatasets();
+      void refreshSourceData();
+    } catch {
+      setStatusMessage("导入失败，请稍后重试。");
+    } finally {
+      setSourceActionKey("");
+    }
+  }
+
+  async function previewOpenAlex() {
+    const query = openAlexQuery.trim();
+    if (query.length < 2) {
+      setStatusMessage("请输入至少两个字符的查询词。");
+      return;
+    }
+    setSourceActionKey("connector:openalex:preview");
+    setStatusMessage("正在预览 OpenAlex 结果...");
+    try {
+      const response = await apiFetch("/api/sources/connectors/openalex/preview", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query, limit: 8 }),
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => null);
+        setStatusMessage(payload?.detail ?? "OpenAlex 预览失败。");
+        return;
+      }
+      setOpenAlexPreview(await parseJson<OpenAlexPreviewResponse>(response));
+      setStatusMessage("已加载 OpenAlex 预览。");
+      setSourceTab("connectors");
+    } catch {
+      setStatusMessage("OpenAlex 预览失败。");
+    } finally {
+      setSourceActionKey("");
+    }
+  }
+
+  async function importOpenAlex() {
+    const query = openAlexQuery.trim();
+    if (query.length < 2) {
+      setStatusMessage("请输入至少两个字符的查询词。");
+      return;
+    }
+    setSourceActionKey("connector:openalex:import");
+    setStatusMessage("正在导入 OpenAlex 语料...");
+    try {
+      const response = await apiFetch("/api/sources/connectors/openalex/import", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query, limit: 80 }),
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => null);
+        setStatusMessage(payload?.detail ?? "OpenAlex 导入失败。");
+        return;
+      }
+      const payload = await response.json();
+      const nextDataset = payload.dataset as Dataset;
+      setDatasets((current) => [nextDataset, ...current.filter((item) => item.id !== nextDataset.id)]);
+      setDatasetDetail({
+        dataset: nextDataset,
+        documents: (payload.documents as DatasetDocument[]) ?? [],
+        workspace: null,
+      });
+      setSelectedDatasetId(nextDataset.id);
+      setWorkspaceOverview(null);
+      setWorkspaceSectionRows({});
+      setWorkspaceSectionTotals({});
+      setWorkspaceSectionLoading({});
+      setAnalysis(null);
+      setSectionRows({});
+      setSectionTotals({});
+      setSectionLoading({});
+      setActiveTab("dataset");
+      setWorkspaceMode("analysis");
+      setStatusMessage(payload.reused_existing ? "已复用现有 OpenAlex 数据集。" : "OpenAlex 语料已导入。");
+      void refreshWorkspace(nextDataset.id, { silent: true });
+      void refreshAnalysisHistory(nextDataset.id, true);
+      void refreshExportHistory(nextDataset.id);
+      void refreshDatasets();
+      void refreshSourceData();
+    } catch {
+      setStatusMessage("OpenAlex 导入失败。");
+    } finally {
+      setSourceActionKey("");
+    }
+  }
+
+  async function searchHuggingFace() {
+    const query = hfQuery.trim();
+    if (query.length < 2) {
+      setStatusMessage("请输入至少两个字符的 Hugging Face 查询词。");
+      return;
+    }
+    setSourceActionKey("connector:huggingface:search");
+    setStatusMessage("正在搜索 Hugging Face 数据集...");
+    try {
+      const response = await apiFetch("/api/sources/connectors/huggingface/search", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query, limit: 8 }),
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => null);
+        setStatusMessage(payload?.detail ?? "Hugging Face 搜索失败。");
+        return;
+      }
+      const payload = await parseJson<HuggingFaceSearchResponse>(response);
+      setHfSearch(payload);
+      setHfPreview(null);
+      setStatusMessage("已加载 Hugging Face 数据集列表。");
+    } catch {
+      setStatusMessage("Hugging Face 搜索失败。");
+    } finally {
+      setSourceActionKey("");
+    }
+  }
+
+  async function previewHuggingFace(datasetId: string) {
+    setSourceActionKey(`connector:huggingface:preview:${datasetId}`);
+    setStatusMessage("正在预览 Hugging Face 数据集...");
+    try {
+      const response = await apiFetch("/api/sources/connectors/huggingface/preview", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ dataset_id: datasetId, limit: 6 }),
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => null);
+        setStatusMessage(payload?.detail ?? "Hugging Face 预览失败。");
+        return;
+      }
+      setHfPreview(await parseJson<HuggingFacePreviewResponse>(response));
+      setStatusMessage("已加载 Hugging Face 样本预览。");
+    } catch {
+      setStatusMessage("Hugging Face 预览失败。");
+    } finally {
+      setSourceActionKey("");
+    }
+  }
+
+  async function importHuggingFace(datasetId: string) {
+    setSourceActionKey(`connector:huggingface:import:${datasetId}`);
+    setStatusMessage("正在导入 Hugging Face 数据集...");
+    try {
+      const response = await apiFetch("/api/sources/connectors/huggingface/import", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ dataset_id: datasetId, limit: 120 }),
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => null);
+        setStatusMessage(payload?.detail ?? "Hugging Face 导入失败。");
+        return;
+      }
+      const payload = await response.json();
+      const nextDataset = payload.dataset as Dataset;
+      setDatasets((current) => [nextDataset, ...current.filter((item) => item.id !== nextDataset.id)]);
+      setDatasetDetail({
+        dataset: nextDataset,
+        documents: (payload.documents as DatasetDocument[]) ?? [],
+        workspace: null,
+      });
+      setSelectedDatasetId(nextDataset.id);
+      setWorkspaceOverview(null);
+      setWorkspaceSectionRows({});
+      setWorkspaceSectionTotals({});
+      setWorkspaceSectionLoading({});
+      setAnalysis(null);
+      setSectionRows({});
+      setSectionTotals({});
+      setSectionLoading({});
+      setActiveTab("dataset");
+      setWorkspaceMode("analysis");
+      setStatusMessage(payload.reused_existing ? "已复用现有 Hugging Face 数据集。" : "Hugging Face 数据集已导入。");
+      void refreshWorkspace(nextDataset.id, { silent: true });
+      void refreshAnalysisHistory(nextDataset.id, true);
+      void refreshExportHistory(nextDataset.id);
+      void refreshDatasets();
+      void refreshSourceData();
+    } catch {
+      setStatusMessage("Hugging Face 导入失败。");
+    } finally {
+      setSourceActionKey("");
     }
   }
 
@@ -849,6 +1214,7 @@ export default function Home() {
       setSearchQuery("");
       setStatusMessage("数据集已删除。");
       void refreshDatasets();
+      void refreshSourceData();
     } catch {
       setStatusMessage("删除失败。");
     } finally {
@@ -1613,6 +1979,287 @@ export default function Home() {
     return renderExports();
   }
 
+  function renderSourceSection() {
+    return (
+      <div className="sidebar-stack source-stack">
+        <div className="source-header">
+          <label className="field-label">从数据源导入</label>
+          <span className="source-caption">内置高质量语料和研究型开放来源</span>
+        </div>
+        <div className="source-summary-grid">
+          <div className="source-summary-pill">
+            <strong>{sourceAssets.length}</strong>
+            <span>官方数据集</span>
+          </div>
+          <div className="source-summary-pill">
+            <strong>{sourceConnectors.length}</strong>
+            <span>外部来源</span>
+          </div>
+          <div className="source-summary-pill">
+            <strong>{sourceImports.length}</strong>
+            <span>导入记录</span>
+          </div>
+        </div>
+        <button className="primary-button" onClick={() => setWorkspaceMode("sources")} type="button">
+          打开数据源工作区
+        </button>
+      </div>
+    );
+  }
+
+  function renderDataSourceWorkspace() {
+    return (
+      <>
+        <section className="workspace-toolbar">
+          <div className="workspace-head">
+            <div>
+              <span className="eyebrow">数据源工作区</span>
+              <h2>选择官方语料或外部来源</h2>
+            </div>
+            <div className="workspace-head-side">
+              <div className="workspace-meta">
+                <span>{sourceAssets.length} 个官方数据集</span>
+                <span>{sourceConnectors.length} 个连接器</span>
+                <span>{sourceImports.length} 条导入记录</span>
+              </div>
+            </div>
+          </div>
+          <div className="source-toolbar-grid">
+            <article className="panel-soft source-hero-card">
+              <strong>官方数据集</strong>
+              <span>适合快速试用、教学演示和稳定复现。</span>
+            </article>
+            <article className="panel-soft source-hero-card">
+              <strong>研究型来源</strong>
+              <span>支持 OpenAlex 和 Hugging Face 的开放文本数据。</span>
+            </article>
+            <article className="panel-soft source-hero-card">
+              <strong>导入即分析</strong>
+              <span>导入后直接进入现有数据集、词项工作台和分析模块。</span>
+            </article>
+          </div>
+        </section>
+
+        <section className="panel">
+          <div className="panel-header">
+            <h2>数据源</h2>
+            <div className="tab-strip">
+              <button className={`tab-button ${sourceTab === "library" ? "tab-button-active" : ""}`} onClick={() => setSourceTab("library")} type="button">
+                官方数据集
+              </button>
+              <button
+                className={`tab-button ${sourceTab === "connectors" ? "tab-button-active" : ""}`}
+                onClick={() => setSourceTab("connectors")}
+                type="button"
+              >
+                外部来源
+              </button>
+              <button className={`tab-button ${sourceTab === "imports" ? "tab-button-active" : ""}`} onClick={() => setSourceTab("imports")} type="button">
+                导入记录
+              </button>
+            </div>
+          </div>
+
+          {sourceTab === "library" ? (
+            <div className="source-workspace-stack">
+              <div className="search-row">
+                <input
+                  className="search-input"
+                  onChange={(event) => setSourceQuery(event.target.value)}
+                  placeholder="搜索评论、微博、酒店、新闻、分类基准..."
+                  type="search"
+                  value={sourceQuery}
+                />
+              </div>
+              <div className="source-grid">
+                {sourceLoading && !sourceAssets.length ? <p className="empty-state">正在加载官方数据集...</p> : null}
+                {visibleSourceAssets.map((asset) => (
+                  <article className="source-card source-card-large" key={asset.id}>
+                    <div className="source-card-top">
+                      <div className="source-card-title-block">
+                        <strong>{asset.name}</strong>
+                        <span className="source-card-subtitle">{asset.category}</span>
+                      </div>
+                      <span className="source-count">{asset.document_count} 条</span>
+                    </div>
+                    <p>{asset.description}</p>
+                    <div className="source-meta-list">
+                      <span>来源：{asset.source_name}</span>
+                      <span>许可：{asset.license}</span>
+                    </div>
+                    <div className="source-tag-list">
+                      {asset.tags.map((tag) => (
+                        <span className="source-tag" key={`${asset.id}-${tag}`}>
+                          {tag}
+                        </span>
+                      ))}
+                    </div>
+                    <div className="source-card-footer">
+                      <span>推荐模块：{asset.recommended_modules.join(" / ")}</span>
+                      <button
+                        className="primary-button"
+                        disabled={Boolean(sourceActionKey)}
+                        onClick={() => void importBuiltinAsset(asset)}
+                        type="button"
+                      >
+                        {sourceActionKey === `library:${asset.id}` ? "导入中" : "导入为数据集"}
+                      </button>
+                    </div>
+                  </article>
+                ))}
+              </div>
+              {!sourceLoading && !visibleSourceAssets.length ? <p className="empty-state">没有匹配的数据资产。</p> : null}
+            </div>
+          ) : null}
+
+          {sourceTab === "connectors" ? (
+            <div className="source-connector-layout">
+              <section className="panel-soft connector-panel">
+                <div className="panel-subhead">
+                  <h3>OpenAlex</h3>
+                  <span className="source-count">论文摘要</span>
+                </div>
+                <p className="helper-text">输入研究主题、学科方向或关键词，先预览论文标题和摘要，再导入成研究语料。</p>
+                <textarea
+                  className="term-textarea"
+                  onChange={(event) => setOpenAlexQuery(event.target.value)}
+                  placeholder="例如：数字人文、平台治理、舆论传播"
+                  rows={3}
+                  value={openAlexQuery}
+                />
+                <div className="sidebar-upload-actions">
+                  <button className="ghost-button" disabled={Boolean(sourceActionKey)} onClick={() => void previewOpenAlex()} type="button">
+                    {sourceActionKey === "connector:openalex:preview" ? "预览中" : "预览样本"}
+                  </button>
+                  <button className="primary-button" disabled={Boolean(sourceActionKey)} onClick={() => void importOpenAlex()} type="button">
+                    {sourceActionKey === "connector:openalex:import" ? "导入中" : "导入语料"}
+                  </button>
+                </div>
+                {openAlexPreview?.items.length ? (
+                  <div className="source-preview-list">
+                    {openAlexPreview.items.slice(0, 4).map((item) => (
+                      <article className="source-preview-card" key={item.external_id}>
+                        <strong>{item.title}</strong>
+                        <p>{item.abstract || "暂无摘要，导入时将回退到标题。"}</p>
+                        <span>
+                          {(item.authors || []).slice(0, 3).join(" / ") || "未知作者"}
+                          {item.publication_year ? ` · ${item.publication_year}` : ""}
+                        </span>
+                      </article>
+                    ))}
+                  </div>
+                ) : null}
+              </section>
+
+              <section className="panel-soft connector-panel">
+                <div className="panel-subhead">
+                  <h3>Hugging Face Datasets</h3>
+                  <span className="source-count">开放数据集</span>
+                </div>
+                <p className="helper-text">搜索公开文本数据集，预览首批样本，再把数据集切片导入到当前系统。</p>
+                <textarea
+                  className="term-textarea"
+                  onChange={(event) => setHfQuery(event.target.value)}
+                  placeholder="例如：weibo sentiment、hotel review、news classification"
+                  rows={3}
+                  value={hfQuery}
+                />
+                <div className="sidebar-upload-actions">
+                  <button className="ghost-button" disabled={Boolean(sourceActionKey)} onClick={() => void searchHuggingFace()} type="button">
+                    {sourceActionKey === "connector:huggingface:search" ? "搜索中" : "搜索数据集"}
+                  </button>
+                </div>
+                {hfSearch?.items.length ? (
+                  <div className="source-card-list">
+                    {hfSearch.items.slice(0, 4).map((item) => (
+                      <article className="source-preview-card" key={item.dataset_id}>
+                        <strong>{item.dataset_id}</strong>
+                        <p>{item.description || "暂无简介。"}</p>
+                        <span>
+                          {item.author || "未知作者"} · ❤ {item.likes} · ⬇ {item.downloads}
+                        </span>
+                        <div className="sidebar-upload-actions">
+                          <button
+                            className="ghost-button"
+                            disabled={Boolean(sourceActionKey)}
+                            onClick={() => void previewHuggingFace(item.dataset_id)}
+                            type="button"
+                          >
+                            {sourceActionKey === `connector:huggingface:preview:${item.dataset_id}` ? "预览中" : "预览样本"}
+                          </button>
+                          <button
+                            className="primary-button"
+                            disabled={Boolean(sourceActionKey)}
+                            onClick={() => void importHuggingFace(item.dataset_id)}
+                            type="button"
+                          >
+                            {sourceActionKey === `connector:huggingface:import:${item.dataset_id}` ? "导入中" : "导入"}
+                          </button>
+                        </div>
+                      </article>
+                    ))}
+                  </div>
+                ) : null}
+                {hfPreview?.items.length ? (
+                  <div className="source-preview-list">
+                    {hfPreview.items.slice(0, 3).map((item) => (
+                      <article className="source-preview-card" key={`${hfPreview.dataset_id}-${item.row_idx}`}>
+                        <strong>{item.title || hfPreview.dataset_id}</strong>
+                        <p>{item.text}</p>
+                        <span>
+                          {hfPreview.config} / {hfPreview.split}
+                          {item.label ? ` · ${item.label}` : ""}
+                        </span>
+                      </article>
+                    ))}
+                  </div>
+                ) : null}
+              </section>
+            </div>
+          ) : null}
+
+          {sourceTab === "imports" ? (
+            <div className="source-grid">
+              {sourceImports.map((record) => (
+                <article className="source-card source-card-large" key={record.dataset_id}>
+                  <div className="source-card-top">
+                    <div className="source-card-title-block">
+                      <strong>{record.dataset_name}</strong>
+                      <span className="source-card-subtitle">
+                        {record.source_type === "library" ? "官方数据集" : "外部连接器"}
+                      </span>
+                    </div>
+                    <span className="source-count">{record.document_count} 条</span>
+                  </div>
+                  <p>
+                    {record.source_label || "-"}
+                    {record.source_reference ? ` · ${record.source_reference}` : ""}
+                  </p>
+                  <div className="source-card-footer">
+                    <span>{formatDateTime(record.created_at)}</span>
+                    <button
+                      className="primary-button"
+                      onClick={() => {
+                        setSelectedDatasetId(record.dataset_id);
+                        setActiveTab("dataset");
+                        setWorkspaceMode("analysis");
+                        setStatusMessage("已切换到导入数据集。");
+                      }}
+                      type="button"
+                    >
+                      打开数据集
+                    </button>
+                  </div>
+                </article>
+              ))}
+              {!sourceImports.length ? <p className="empty-state">当前还没有导入记录。</p> : null}
+            </div>
+          ) : null}
+        </section>
+      </>
+    );
+  }
+
   const needsSearch = !["dataset", "overview", "workspace", "report"].includes(activeTab);
 
   return (
@@ -1687,6 +2334,8 @@ export default function Home() {
               </form>
             </div>
 
+            {renderSourceSection()}
+
             <div className="sidebar-stack">
               <label className="field-label" htmlFor="dataset-select">
                 当前数据集
@@ -1724,7 +2373,10 @@ export default function Home() {
                     <button
                       className={`module-button ${activeTab === moduleId ? "module-button-active" : ""}`}
                       key={moduleId}
-                      onClick={() => setActiveTab(moduleId)}
+                      onClick={() => {
+                        setWorkspaceMode("analysis");
+                        setActiveTab(moduleId);
+                      }}
                       type="button"
                     >
                       <span>{moduleLabels[moduleId]}</span>
@@ -1738,84 +2390,108 @@ export default function Home() {
         </aside>
 
         <section className="workspace">
-          <section className="workspace-toolbar">
-            <div className="workspace-head">
-              <div>
-                <span className="eyebrow">{moduleLabels[activeTab]}</span>
-                <h2>{selectedDataset?.name ?? "未选择数据集"}</h2>
-              </div>
-              <div className="workspace-head-side">
-                <div className="workspace-meta">
-                  <span>{selectedDataset?.document_count ?? 0} 条</span>
-                  {datasetDetail?.dataset.text_column ? <span>文本列：{datasetDetail.dataset.text_column}</span> : null}
-                  {workspaceOverview?.workspace.updated_at ? <span>工作台：{formatDateTime(workspaceOverview.workspace.updated_at)}</span> : null}
-                  {activeRun ? <span>分析：{formatRunStatus(activeRun.status)}</span> : null}
-                </div>
-              </div>
-            </div>
-
-            <div className="analysis-actions">
-              <button
-                className="primary-button action-card"
-                disabled={!selectedDatasetId || isPending || workspaceSaving}
-                onClick={() => setActiveTab("workspace")}
-                type="button"
-              >
-                <strong>整理词项</strong>
-                <span>补词、排除、同义词、人工选词</span>
-              </button>
-              <button
-                className="ghost-button action-card"
-                disabled={!selectedDatasetId || isPending || activeRun?.status === "queued" || activeRun?.status === "running"}
-                onClick={() => void runAnalysisStage("explore", "selected", "正在生成探索结果...")}
-                type="button"
-              >
-                <strong>生成探索结果</strong>
-                <span>选词、匹配、矩阵、共词导出</span>
-              </button>
-              <button
-                className="ghost-button action-card"
-                disabled={!selectedDatasetId || isPending || activeRun?.status === "queued" || activeRun?.status === "running"}
-                onClick={() => void runAnalysisStage("discover", "topics", "正在发现主题结构...")}
-                type="button"
-              >
-                <strong>发现主题</strong>
-                <span>主题聚类、关键词、代表文本</span>
-              </button>
-              <button
-                className="ghost-button action-card"
-                disabled={!selectedDatasetId || isPending || activeRun?.status === "queued" || activeRun?.status === "running"}
-                onClick={() => void runAnalysisStage("sentiment", "sentiment", "正在生成情感结果...")}
-                type="button"
-              >
-                <strong>情感分析</strong>
-                <span>正向、中性、负向</span>
-              </button>
-              {latestFailedRun ? (
-                <button className="ghost-button action-card" onClick={() => void retryAnalysis(latestFailedRun.id)} type="button">
-                  <strong>重试失败任务</strong>
-                  <span>{latestFailedRun.id}</span>
-                </button>
-              ) : null}
-              {latestCompletedRun ? (
-                <button className="ghost-button action-card" onClick={() => void loadAnalysisSummary(latestCompletedRun.id)} type="button">
-                  <strong>打开最新结果</strong>
-                  <span>{latestCompletedRun.id}</span>
-                </button>
-              ) : null}
-            </div>
-
-            {needsSearch ? (
-              <input
-                className="search-input"
-                onChange={(event) => setSearchQuery(event.target.value)}
-                placeholder={`搜索${moduleLabels[activeTab]}`}
-                value={searchQuery}
-              />
-            ) : null}
+          <section className="workspace-switcher">
+            <button
+              className={`tab-button ${workspaceMode === "sources" ? "tab-button-active" : ""}`}
+              onClick={() => setWorkspaceMode("sources")}
+              type="button"
+            >
+              数据源工作区
+            </button>
+            <button
+              className={`tab-button ${workspaceMode === "analysis" ? "tab-button-active" : ""}`}
+              onClick={() => setWorkspaceMode("analysis")}
+              type="button"
+            >
+              分析工作台
+            </button>
           </section>
 
-          {renderActiveTab()}
+          {workspaceMode === "sources" ? (
+            renderDataSourceWorkspace()
+          ) : (
+            <>
+              <section className="workspace-toolbar">
+                <div className="workspace-head">
+                  <div>
+                    <span className="eyebrow">{moduleLabels[activeTab]}</span>
+                    <h2>{selectedDataset?.name ?? "未选择数据集"}</h2>
+                  </div>
+                  <div className="workspace-head-side">
+                    <div className="workspace-meta">
+                      <span>{selectedDataset?.document_count ?? 0} 条</span>
+                      {selectedDataset?.source_label ? <span>来源：{selectedDataset.source_label}</span> : null}
+                      {datasetDetail?.dataset.text_column ? <span>文本列：{datasetDetail.dataset.text_column}</span> : null}
+                      {workspaceOverview?.workspace.updated_at ? <span>工作台：{formatDateTime(workspaceOverview.workspace.updated_at)}</span> : null}
+                      {activeRun ? <span>分析：{formatRunStatus(activeRun.status)}</span> : null}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="analysis-actions">
+                  <button
+                    className="primary-button action-card"
+                    disabled={!selectedDatasetId || isPending || workspaceSaving}
+                    onClick={() => setActiveTab("workspace")}
+                    type="button"
+                  >
+                    <strong>整理词项</strong>
+                    <span>补词、排除、同义词、人工选词</span>
+                  </button>
+                  <button
+                    className="ghost-button action-card"
+                    disabled={!selectedDatasetId || isPending || activeRun?.status === "queued" || activeRun?.status === "running"}
+                    onClick={() => void runAnalysisStage("explore", "selected", "正在生成探索结果...")}
+                    type="button"
+                  >
+                    <strong>生成探索结果</strong>
+                    <span>选词、匹配、矩阵、共词导出</span>
+                  </button>
+                  <button
+                    className="ghost-button action-card"
+                    disabled={!selectedDatasetId || isPending || activeRun?.status === "queued" || activeRun?.status === "running"}
+                    onClick={() => void runAnalysisStage("discover", "topics", "正在发现主题结构...")}
+                    type="button"
+                  >
+                    <strong>发现主题</strong>
+                    <span>主题聚类、关键词、代表文本</span>
+                  </button>
+                  <button
+                    className="ghost-button action-card"
+                    disabled={!selectedDatasetId || isPending || activeRun?.status === "queued" || activeRun?.status === "running"}
+                    onClick={() => void runAnalysisStage("sentiment", "sentiment", "正在生成情感结果...")}
+                    type="button"
+                  >
+                    <strong>情感分析</strong>
+                    <span>正向、中性、负向</span>
+                  </button>
+                  {latestFailedRun ? (
+                    <button className="ghost-button action-card" onClick={() => void retryAnalysis(latestFailedRun.id)} type="button">
+                      <strong>重试失败任务</strong>
+                      <span>{latestFailedRun.id}</span>
+                    </button>
+                  ) : null}
+                  {latestCompletedRun ? (
+                    <button className="ghost-button action-card" onClick={() => void loadAnalysisSummary(latestCompletedRun.id)} type="button">
+                      <strong>打开最新结果</strong>
+                      <span>{latestCompletedRun.id}</span>
+                    </button>
+                  ) : null}
+                </div>
+
+                {needsSearch ? (
+                  <input
+                    className="search-input"
+                    onChange={(event) => setSearchQuery(event.target.value)}
+                    placeholder={`搜索${moduleLabels[activeTab]}`}
+                    value={searchQuery}
+                  />
+                ) : null}
+              </section>
+
+              {renderActiveTab()}
+            </>
+          )}
         </section>
       </div>
     </main>

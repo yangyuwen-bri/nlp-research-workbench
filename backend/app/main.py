@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from .routers import analyses, datasets, exports
+from .routers import analyses, datasets, exports, sources
 from .runtime_guard import assert_runtime_ready_for_startup, evaluate_runtime_readiness
 from .settings import get_settings
 from .storage import check_storage_connection
@@ -37,6 +37,7 @@ app.add_middleware(
 )
 
 app.include_router(datasets.router, prefix="/api")
+app.include_router(sources.router, prefix="/api")
 app.include_router(analyses.router, prefix="/api")
 app.include_router(exports.router, prefix="/api")
 

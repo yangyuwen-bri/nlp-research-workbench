@@ -1,0 +1,44 @@
+{
+  "datasets": [
+    {
+      "file": "public_online_shopping_demo.csv",
+      "rows": 400,
+      "source_name": "ChineseNlpCorpus / online_shopping_10_cats",
+      "source_url": "https://raw.githubusercontent.com/SophonPlus/ChineseNlpCorpus/master/datasets/online_shopping_10_cats/online_shopping_10_cats.zip",
+      "task": "sentiment",
+      "notes": "Balanced multi-category e-commerce reviews for sentiment, topic, and clustering demos."
+    },
+    {
+      "file": "public_waimai_demo.csv",
+      "rows": 240,
+      "source_name": "ChineseNlpCorpus / waimai_10k",
+      "source_url": "https://raw.githubusercontent.com/SophonPlus/ChineseNlpCorpus/master/datasets/waimai_10k/waimai_10k.csv",
+      "task": "sentiment",
+      "notes": "Delivery review subset for sentiment and aspect-oriented evaluation."
+    },
+    {
+      "file": "public_weibo_senti_demo.csv",
+      "rows": 600,
+      "source_name": "dirtycomputer / weibo_senti_100k",
+      "source_url": "https://huggingface.co/datasets/dirtycomputer/weibo_senti_100k/resolve/main/weibo_senti_100k.csv?download=true",
+      "task": "sentiment",
+      "notes": "Large-scale Weibo sentiment subset for social opinion sentiment benchmarking."
+    },
+    {
+      "file": "public_chnsenticorp_htl_demo.csv",
+      "rows": 600,
+      "source_name": "dirtycomputer / ChnSentiCorp_htl_all",
+      "source_url": "https://huggingface.co/datasets/dirtycomputer/ChnSentiCorp_htl_all/resolve/main/ChnSentiCorp_htl_all.csv?download=true",
+      "task": "sentiment",
+      "notes": "Hotel review sentiment benchmark widely used for Chinese sentiment analysis."
+    },
+    {
+      "file": "public_rumor_opinion_demo.csv",
+      "rows": 500,
+      "source_name": "THUNLP / Chinese_Rumor_Dataset",
+      "source_url": "https://raw.githubusercontent.com/thunlp/Chinese_Rumor_Dataset/master/rumors_v170613.json",
+      "task": "opinion_topic",
+      "notes": "Weibo rumor and public-opinion corpus for topic, risk narrative, and reporting demos."
+    }
+  ]
+}
