@@ -1,0 +1,51 @@
+name: Tieba Hotspot Daily Collect
+
+on:
+  workflow_dispatch:
+  schedule:
+    # 09:30 Asia/Shanghai = 01:30 UTC
+    - cron: '30 1 * * *'
+
+permissions:
+  contents: read
+
+env:
+  PYTHONUNBUFFERED: '1'
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Restore incremental SQLite state
+        uses: actions/cache@v4
+        with:
+          path: data/tieba.sqlite3
+          key: tieba-db-${{ github.run_id }}
+          restore-keys: |
+            tieba-db-
+
+      - name: Run daily collector
+        run: python run_daily.py
+
+      - name: Build artifact
+        if: always()
+        run: |
+          mkdir -p artifact
+          cp -f data/tieba.sqlite3 artifact/ 2>/dev/null || true
+          cp -R data/runs artifact/runs 2>/dev/null || true
+          tar -czf tieba-data-${{ github.run_id }}.tar.gz artifact
+
+      - name: Upload data artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tieba-data-${{ github.run_id }}
+          path: tieba-data-${{ github.run_id }}.tar.gz
+          retention-days: 30
