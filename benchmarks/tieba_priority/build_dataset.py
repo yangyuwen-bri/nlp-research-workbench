@@ -8,14 +8,14 @@ import json
 import re
 import urllib.parse
 import urllib.request
-from datetime import date, timedelta
+from datetime import date
 from html.parser import HTMLParser
 from pathlib import Path
 
 ARCHIVE = "https://raw.githubusercontent.com/LeilaoMi/hot-news-radar/reports/reports/archive.html"
 RAW_BASE = "https://raw.githubusercontent.com/LeilaoMi/hot-news-radar/reports/reports"
 UA = "Mozilla/5.0 benchmark-builder/1.0"
-START_DATE = date(2026, 9, 1)
+START_DATE = date(2026, 9, 20)
 END_DATE = date(2026, 10, 28)
 TARGET_SIZE = 100
 
@@ -23,18 +23,16 @@ TARGET_SIZE = 100
 def fetch(url: str) -> str:
     req = urllib.request.Request(url, headers={"User-Agent": UA})
     with urllib.request.urlopen(req, timeout=30) as r:
-        raw = r.read()
-    return raw.decode("utf-8", "replace")
+        return r.read().decode("utf-8", "replace")
 
 
-def latest_snapshots(archive: str, start: date, end: date) -> list[tuple[str, str]]:
-    found = []
-    for d in (start + timedelta(days=i) for i in range((end-start).days + 1)):
-        ds = d.isoformat()
-        times = re.findall(rf'href="{re.escape(ds)}/(\d{{2}}-\d{{2}})\.html"', archive)
-        if times:
-            found.append((ds, max(times)))
-    return found
+def all_snapshots(archive: str, start: date, end: date) -> list[tuple[str, str]]:
+    rows = []
+    for ds, tm in re.findall(r'href="(\d{4}-\d{2}-\d{2})/(\d{2}-\d{2})\.html"', archive):
+        d = date.fromisoformat(ds)
+        if start <= d <= end:
+            rows.append((ds, tm))
+    return sorted(set(rows), reverse=True)
 
 
 class TiebaListParser(HTMLParser):
@@ -71,8 +69,7 @@ class TiebaListParser(HTMLParser):
             self.in_source_title = False
         if tag == "div" and self.in_rank:
             self.in_rank = False
-            txt = "".join(self.rank_buf).strip()
-            self.current_rank = txt or None
+            self.current_rank = "".join(self.rank_buf).strip() or None
         if tag == "a" and self._pending_href:
             title = html.unescape("".join(self._pending_title)).strip()
             if title:
@@ -98,7 +95,7 @@ def parse_snapshot(text: str) -> list[dict]:
     for x in p.items:
         qs = urllib.parse.parse_qs(urllib.parse.urlsplit(x["url"]).query)
         topic_id = (qs.get("topic_id") or [""])[0]
-        key = topic_id or x["url"]
+        key = topic_id or x["title"]
         if key in seen:
             continue
         seen.add(key)
@@ -111,50 +108,55 @@ def main():
     outdir = Path("benchmark_out")
     outdir.mkdir(exist_ok=True)
     archive = fetch(ARCHIVE)
-    snaps = latest_snapshots(archive, START_DATE, END_DATE)
-    rows = []
-    active_days = 0
+    snaps = all_snapshots(archive, START_DATE, END_DATE)
+
+    # Scan newest snapshots first, but count a topic only once by topic_id/title.
+    # This gives 100 distinct decision cases without overweighting repeated hourly listings.
+    unique = []
+    seen = set()
+    scanned = 0
+    active_snapshots = 0
     for ds, tm in snaps:
         url = f"{RAW_BASE}/{ds}/{tm}.html"
-        text = fetch(url)
-        items = parse_snapshot(text)
-        print(ds, tm, "Tieba items", len(items))
+        items = parse_snapshot(fetch(url))
+        scanned += 1
         if items:
-            active_days += 1
+            active_snapshots += 1
         for item in items:
-            rows.append({"date": ds, "snapshot_time": tm.replace("-", ":"), "snapshot_url": url, **item})
+            key = item["topic_id"] or item["title"]
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append({
+                "date": ds,
+                "snapshot_time": tm.replace("-", ":"),
+                "snapshot_url": url,
+                **item,
+            })
+        print(ds, tm, "Tieba items", len(items), "unique", len(unique))
+        if len(unique) >= TARGET_SIZE:
+            break
 
-    # Keep newest occurrence of each topic. Sampling from daily final snapshots avoids
-    # over-weighting days that happened to have more hourly captures.
-    unique_rev = []
-    seen = set()
-    for r in reversed(rows):
-        key = r["topic_id"] or r["title"]
-        if key in seen:
-            continue
-        seen.add(key)
-        unique_rev.append(r)
-    unique = list(reversed(unique_rev))
-    sample = unique[-TARGET_SIZE:]
-
+    sample = unique[:TARGET_SIZE]
     fields = ["id","date","snapshot_time","rank","title","topic_id","url","snapshot_url"]
     with (outdir / "tieba_hotspots_100.csv").open("w", newline="", encoding="utf-8-sig") as f:
         w = csv.DictWriter(f, fieldnames=fields)
         w.writeheader()
-        for i, r in enumerate(sample, 1):
-            w.writerow({"id": i, **r})
+        for i, row in enumerate(sample, 1):
+            w.writerow({"id": i, **row})
 
     with (outdir / "tieba_hotspots_100.jsonl").open("w", encoding="utf-8") as f:
-        for i, r in enumerate(sample, 1):
-            f.write(json.dumps({"id": i, **r}, ensure_ascii=False) + "\n")
+        for i, row in enumerate(sample, 1):
+            f.write(json.dumps({"id": i, **row}, ensure_ascii=False) + "\n")
 
     manifest = {
         "source": "Hot News Radar reports branch only",
         "date_range": [START_DATE.isoformat(), END_DATE.isoformat()],
-        "snapshot_policy": "latest snapshot per natural day",
-        "days_with_tieba_items": active_days,
-        "unique_hotspots_total": len(unique),
-        "sample_policy": f"newest {TARGET_SIZE} unique topic_id/title records",
+        "snapshot_policy": "scan historical snapshots newest-first; deduplicate globally by topic_id/title",
+        "reason": "benchmark needs distinct decision cases; hourly repeats count once",
+        "snapshots_scanned": scanned,
+        "snapshots_with_tieba_items": active_snapshots,
+        "unique_hotspots_found": len(unique),
         "sample_size": len(sample),
     }
     (outdir / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
