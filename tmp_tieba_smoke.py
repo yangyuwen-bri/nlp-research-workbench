@@ -53,6 +53,20 @@ def collect_tids(value):
     return tids
 
 
+def collect_paging_fields(value, prefix=""):
+    out = {}
+    if isinstance(value, dict):
+        for key, item in value.items():
+            path = f"{prefix}.{key}" if prefix else key
+            if any(token in key.lower() for token in ("last", "page", "next", "more", "cursor")) and isinstance(item, (str, int, float, bool, type(None))):
+                out[path] = item
+            out.update(collect_paging_fields(item, path))
+    elif isinstance(value, list):
+        for idx, item in enumerate(value[:3]):
+            out.update(collect_paging_fields(item, f"{prefix}[{idx}]"))
+    return out
+
+
 # 1) thread/floor page
 payload = api("/c/f/pb/page", {"kz": "11063972585", "pn": 1, "rn": 30, "r": 0, "lz": 0, "st": 0, "z": 0})
 thread = payload.get("thread") or {}
@@ -69,7 +83,7 @@ print("THREAD", json.dumps({
 if not posts:
     raise RuntimeError("API returned success but no post_list")
 
-# 2) subposts / 楼中楼 if this sample has any
+# 2) subposts
 candidate = next((p for p in posts if int(p.get("sub_post_number", 0) or 0) > 0), None)
 if candidate:
     sub = api("/c/f/pb/floor", {"kz": "11063972585", "pid": candidate["id"], "pn": 1, "rn": 20})
@@ -80,31 +94,29 @@ if candidate:
         "returned": len(subposts),
         "first_spid": (subposts[0].get("id") or subposts[0].get("spid")) if subposts else None,
     }, ensure_ascii=False))
-else:
-    print("SUBPOST", json.dumps({"skipped": "sample page has no subposts"}, ensure_ascii=False))
 
-# 3) current hottopic list -> getTopicRelateThread -> actual thread ids
+# 3) hottopic -> related threads + paging structure
 hot_list = web_json("https://tieba.baidu.com/hottopic/browse/topicList")
 topics = (((hot_list.get("data") or {}).get("bang_topic") or {}).get("topic_list") or [])
 if not topics:
     raise RuntimeError("topicList returned no topics")
 topic = topics[0]
-query = urllib.parse.urlencode({
+base = {
     "topic_name": topic.get("topic_name", ""),
     "page_no": 1,
     "last_id": 0,
     "topic_id": topic.get("topic_id", ""),
     "sort_type": 1,
-})
-related = web_json("https://tieba.baidu.com/hottopic/browse/getTopicRelateThread?" + query)
+}
+related = web_json("https://tieba.baidu.com/hottopic/browse/getTopicRelateThread?" + urllib.parse.urlencode(base))
 tids = sorted(collect_tids(related), key=int)
 print("HOTTOPIC", json.dumps({
     "topic_id": topic.get("topic_id"),
     "topic_name": topic.get("topic_name"),
     "thread_count": len(tids),
     "sample_tids": tids[:10],
-    "related_top_keys": list(related)[:10],
+    "data_keys": list((related.get("data") or {}).keys()) if isinstance(related.get("data"), dict) else [],
+    "paging": collect_paging_fields(related),
 }, ensure_ascii=False))
 if not tids:
-    print("RELATED_SAMPLE", json.dumps(related, ensure_ascii=False)[:2500])
     raise RuntimeError("getTopicRelateThread returned no discoverable thread ids")
