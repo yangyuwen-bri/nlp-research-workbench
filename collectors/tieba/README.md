@@ -2,6 +2,8 @@
 
 把 Hot News Radar 中的贴吧热点继续展开为实际帖子、楼层和楼中楼，形成适合后续文本分析、主题聚类和舆情研究的结构化语料。
 
+> Deployment note: GitHub Actions smoke test is enabled on `main`.
+
 ## 数据流
 
 ```text
