@@ -1,5 +1,4 @@
 import hashlib
-import html
 import json
 import re
 import urllib.parse
@@ -33,6 +32,27 @@ def api(endpoint, extra):
     return payload
 
 
+def web_json(url):
+    req = urllib.request.Request(url, headers={"User-Agent": WEB_UA, "Referer": "https://tieba.baidu.com/", "Accept": "application/json,text/plain,*/*"})
+    with urllib.request.urlopen(req, timeout=20) as resp:
+        return json.loads(resp.read().decode("utf-8", "replace"))
+
+
+def collect_tids(value):
+    tids = set()
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key in {"tid", "thread_id"} and str(item).isdigit():
+                tids.add(str(item))
+            tids.update(collect_tids(item))
+    elif isinstance(value, list):
+        for item in value:
+            tids.update(collect_tids(item))
+    elif isinstance(value, str):
+        tids.update(re.findall(r"/p/(\d+)", value))
+    return tids
+
+
 # 1) thread/floor page
 payload = api("/c/f/pb/page", {"kz": "11063972585", "pn": 1, "rn": 30, "r": 0, "lz": 0, "st": 0, "z": 0})
 thread = payload.get("thread") or {}
@@ -63,12 +83,28 @@ if candidate:
 else:
     print("SUBPOST", json.dumps({"skipped": "sample page has no subposts"}, ensure_ascii=False))
 
-# 3) hottopic aggregate page -> actual /p/<tid> discovery
-hot_url = "https://tieba.baidu.com/hottopic/browse/hottopic?topic_id=28366306"
-req = urllib.request.Request(hot_url, headers={"User-Agent": WEB_UA, "Referer": "https://tieba.baidu.com/"})
-with urllib.request.urlopen(req, timeout=20) as resp:
-    text = resp.read().decode("utf-8", "replace")
-tids = sorted(set(re.findall(r"(?:https?://(?:c\\.)?tieba\\.baidu\\.com)?/p/(\\d+)", html.unescape(text))), key=int)
-print("HOTTOPIC", json.dumps({"topic_id": "28366306", "thread_count": len(tids), "sample_tids": tids[:10]}, ensure_ascii=False))
+# 3) current hottopic list -> getTopicRelateThread -> actual thread ids
+hot_list = web_json("https://tieba.baidu.com/hottopic/browse/topicList")
+topics = (((hot_list.get("data") or {}).get("bang_topic") or {}).get("topic_list") or [])
+if not topics:
+    raise RuntimeError("topicList returned no topics")
+topic = topics[0]
+query = urllib.parse.urlencode({
+    "topic_name": topic.get("topic_name", ""),
+    "page_no": 1,
+    "last_id": 0,
+    "topic_id": topic.get("topic_id", ""),
+    "sort_type": 1,
+})
+related = web_json("https://tieba.baidu.com/hottopic/browse/getTopicRelateThread?" + query)
+tids = sorted(collect_tids(related), key=int)
+print("HOTTOPIC", json.dumps({
+    "topic_id": topic.get("topic_id"),
+    "topic_name": topic.get("topic_name"),
+    "thread_count": len(tids),
+    "sample_tids": tids[:10],
+    "related_top_keys": list(related)[:10],
+}, ensure_ascii=False))
 if not tids:
-    raise RuntimeError("hottopic page returned no discoverable /p/<tid> links")
+    print("RELATED_SAMPLE", json.dumps(related, ensure_ascii=False)[:2500])
+    raise RuntimeError("getTopicRelateThread returned no discoverable thread ids")
