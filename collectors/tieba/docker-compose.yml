@@ -1,0 +1,7 @@
+services:
+  collector:
+    build: .
+    volumes:
+      - ./data:/app/data
+    environment:
+      - TIEBA_COOKIE=${TIEBA_COOKIE:-}
