@@ -1,0 +1,21 @@
+name: Temporary Tieba V2 Smoke
+
+on:
+  pull_request:
+    paths:
+      - 'tmp_tieba_smoke.py'
+      - '.github/workflows/tmp-tieba-v2-smoke.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python tmp_tieba_smoke.py
