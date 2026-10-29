@@ -13,19 +13,19 @@ permissions:
 jobs:
   build-dataset:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
       - name: Build 100-item Tieba hotspot dataset
-        run: python benchmarks/tieba_priority/build_dataset.py
+        run: python benchmarks/tieba_priority/build_dataset.py --target 100 --days 45 --threads-per-topic 3
       - name: Preview
         run: |
           cat benchmark_out/manifest.json
           echo '--- first 10 ---'
-          head -n 11 benchmark_out/tieba_hotspots_100.csv
+          head -n 11 benchmark_out/tieba_priority_100.csv
       - name: Upload dataset
         uses: actions/upload-artifact@v4
         with:
