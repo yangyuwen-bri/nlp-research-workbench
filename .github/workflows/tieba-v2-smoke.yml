@@ -13,7 +13,7 @@ permissions:
 jobs:
   live-smoke:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -21,21 +21,20 @@ jobs:
           python-version: '3.12'
       - name: Syntax check
         run: python -m py_compile collectors/tieba/tieba_collector_v2.py
-      - name: Direct thread smoke test
+      - name: Direct thread + subposts smoke test
         run: |
           mkdir -p /tmp/tieba-direct
           python collectors/tieba/tieba_collector_v2.py \
             --thread 11063972585 \
             --max-pages 1 \
-            --no-subposts \
-            --sleep 1.2 \
+            --sleep 1.0 \
             --min-success 1 \
             --db /tmp/tieba-direct/tieba.sqlite3 \
             --export-dir /tmp/tieba-direct/export
-          echo '--- threads.jsonl ---'
-          head -n 3 /tmp/tieba-direct/export/threads.jsonl || true
-          echo '--- posts.jsonl ---'
-          head -n 3 /tmp/tieba-direct/export/posts.jsonl || true
+          echo '--- direct counts ---'
+          wc -l /tmp/tieba-direct/export/*.jsonl || true
+          echo '--- first subposts ---'
+          head -n 5 /tmp/tieba-direct/export/subposts.jsonl || true
       - name: Hot-topic discovery smoke test
         run: |
           mkdir -p /tmp/tieba-hottopic
@@ -44,16 +43,33 @@ jobs:
             --max-threads-per-topic 2 \
             --max-pages 1 \
             --no-subposts \
-            --sleep 1.2 \
+            --sleep 1.0 \
             --min-success 1 \
             --db /tmp/tieba-hottopic/tieba.sqlite3 \
             --export-dir /tmp/tieba-hottopic/export
-          echo '--- hottopic threads.jsonl ---'
-          head -n 5 /tmp/tieba-hottopic/export/threads.jsonl || true
+          echo '--- hottopic threads ---'
+          cat /tmp/tieba-hottopic/export/threads.jsonl || true
+      - name: Hot News Radar snapshot end-to-end smoke test
+        run: |
+          mkdir -p /tmp/tieba-snapshot
+          python collectors/tieba/tieba_collector_v2.py \
+            --snapshot 'https://raw.githubusercontent.com/LeilaoMi/hot-news-radar/reports/reports/2026-10-28/21-33.html' \
+            --max-hot-topics 1 \
+            --max-threads-per-topic 1 \
+            --max-pages 1 \
+            --no-subposts \
+            --sleep 1.0 \
+            --min-success 1 \
+            --db /tmp/tieba-snapshot/tieba.sqlite3 \
+            --export-dir /tmp/tieba-snapshot/export
+          echo '--- snapshot discoveries ---'
+          cat /tmp/tieba-snapshot/export/discoveries.jsonl || true
+          echo '--- snapshot threads ---'
+          cat /tmp/tieba-snapshot/export/threads.jsonl || true
       - name: Package smoke output
         if: always()
         run: |
-          tar -czf /tmp/tieba-smoke-output.tar.gz -C /tmp tieba-direct tieba-hottopic || true
+          tar -czf /tmp/tieba-smoke-output.tar.gz -C /tmp tieba-direct tieba-hottopic tieba-snapshot || true
       - name: Upload smoke artifact
         if: always()
         uses: actions/upload-artifact@v4
