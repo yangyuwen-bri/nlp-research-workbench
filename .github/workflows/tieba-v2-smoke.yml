@@ -1,0 +1,63 @@
+name: Tieba Collector V2 Smoke
+
+on:
+  pull_request:
+    paths:
+      - 'collectors/tieba/**'
+      - '.github/workflows/tieba-v2-smoke.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  live-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Syntax check
+        run: python -m py_compile collectors/tieba/tieba_collector_v2.py
+      - name: Direct thread smoke test
+        run: |
+          mkdir -p /tmp/tieba-direct
+          python collectors/tieba/tieba_collector_v2.py \
+            --thread 11063972585 \
+            --max-pages 1 \
+            --no-subposts \
+            --sleep 1.2 \
+            --min-success 1 \
+            --db /tmp/tieba-direct/tieba.sqlite3 \
+            --export-dir /tmp/tieba-direct/export
+          echo '--- threads.jsonl ---'
+          head -n 3 /tmp/tieba-direct/export/threads.jsonl || true
+          echo '--- posts.jsonl ---'
+          head -n 3 /tmp/tieba-direct/export/posts.jsonl || true
+      - name: Hot-topic discovery smoke test
+        run: |
+          mkdir -p /tmp/tieba-hottopic
+          python collectors/tieba/tieba_collector_v2.py \
+            --hot-topic 'https://tieba.baidu.com/hottopic/browse/hottopic?topic_id=28368227' \
+            --max-threads-per-topic 2 \
+            --max-pages 1 \
+            --no-subposts \
+            --sleep 1.2 \
+            --min-success 1 \
+            --db /tmp/tieba-hottopic/tieba.sqlite3 \
+            --export-dir /tmp/tieba-hottopic/export
+          echo '--- hottopic threads.jsonl ---'
+          head -n 5 /tmp/tieba-hottopic/export/threads.jsonl || true
+      - name: Package smoke output
+        if: always()
+        run: |
+          tar -czf /tmp/tieba-smoke-output.tar.gz -C /tmp tieba-direct tieba-hottopic || true
+      - name: Upload smoke artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tieba-v2-smoke-output
+          path: /tmp/tieba-smoke-output.tar.gz
+          retention-days: 7
